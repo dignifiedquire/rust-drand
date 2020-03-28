@@ -1,0 +1,18 @@
+[package]
+name = "drand"
+version = "0.1.0"
+authors = ["dignifiedquire <me@dignifiedquire.com>"]
+edition = "2018"
+license = "MIT or Apache 2.0"
+
+[[bin]]
+name = "rdrand"
+path = "src/main.rs"
+
+[dependencies]
+tokio = "0.2.13"
+tonic = "0.1.1"
+structopt = "0.3.12"
+home = "0.5.3"
+humantime = "2.0.0"
+lazy_static = "1.4.0"

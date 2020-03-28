@@ -16,3 +16,8 @@ structopt = "0.3.12"
 home = "0.5.3"
 humantime = "2.0.0"
 lazy_static = "1.4.0"
+anyhow = "1.0.27"
+log = { version = "0.4.8", features = ["std"] }
+ansi_term = "0.12.1"
+unicode-segmentation = "1.6.0"
+atty = "0.2.14"

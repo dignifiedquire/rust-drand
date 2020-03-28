@@ -2,9 +2,13 @@
 
 use std::path::PathBuf;
 
+use anyhow::Result;
 use humantime::Duration;
 use lazy_static::lazy_static;
+use log::info;
 use structopt::StructOpt;
+
+use drand::{core, daemon, logger};
 
 const DEFAULT_FOLDER_NAME: &str = ".drand";
 
@@ -12,7 +16,7 @@ lazy_static! {
     static ref DEFAULT_TIMEOUT: Duration = std::time::Duration::from_secs(60).into();
 }
 
-#[derive(StructOpt)]
+#[derive(Debug, StructOpt)]
 #[structopt(about = "distributed randomness service")]
 struct Drand {
     /// Folder to keep all drand cryptographic information, with absolute path.
@@ -26,20 +30,20 @@ struct Drand {
     cmd: DrandCommand,
 }
 
-#[derive(StructOpt)]
+#[derive(Debug, StructOpt)]
 enum DrandCommand {
     /// Start the drand daemon.
     Start {
         /// Set the TLS certificate chain (in PEM format) for this drand node.
         /// The certificates have to be specified as a list of whitespace-separated file paths.
         /// This parameter is required by default and can only be omitted if the --tls-disable flag is used.
-        #[structopt(long, short = "c", parse(from_os_str))]
-        tls_cert: PathBuf,
+        #[structopt(long, short = "c", parse(from_os_str), required_unless = "tls-disable")]
+        tls_cert: Option<PathBuf>,
         /// Set the TLS private key (in PEM format) for this drand node.
         /// The key has to be specified as a file path.
         /// This parameter is required by default and can only be omitted if the --tls-disable flag is used.
-        #[structopt(long, short = "k", parse(from_os_str))]
-        tls_key: PathBuf,
+        #[structopt(long, short = "k", parse(from_os_str), required_unless = "tls-disable")]
+        tls_key: Option<PathBuf>,
         /// Disable TLS for all communications (not recommended).
         #[structopt(long, short = "d")]
         tls_disable: bool,
@@ -48,7 +52,7 @@ enum DrandCommand {
         control: usize,
         /// Set the listening (binding) address. Useful if you have some kind of proxy.
         #[structopt(long, short = "l")]
-        listen: Option<usize>,
+        listen: Option<String>,
         /// Directory containing trusted certificates. Useful for testing and self signed certificates
         #[structopt(long, parse(from_os_str))]
         certs_dir: Option<PathBuf>,
@@ -162,7 +166,7 @@ enum DrandCommand {
     },
 }
 
-#[derive(StructOpt)]
+#[derive(Debug, StructOpt)]
 enum GetCommand {
     /// Get private randomness from the drand beacon as
     /// specified in group.toml. Only one node is contacted by
@@ -184,7 +188,7 @@ enum GetCommand {
     Cokey {},
 }
 
-#[derive(StructOpt)]
+#[derive(Debug, StructOpt)]
 enum ShowCommand {
     /// Shows the private share.
     Share {},
@@ -208,6 +212,82 @@ fn get_default_folder() -> PathBuf {
     home_dir.join(DEFAULT_FOLDER_NAME)
 }
 
-fn main() {
+fn main() -> Result<()> {
     let opts = Drand::from_args();
+
+    dbg!(&opts);
+    opts.setup_logger();
+
+    match opts.cmd {
+        DrandCommand::Start { .. } => daemon::start(),
+        DrandCommand::Stop { .. } => daemon::stop(),
+        DrandCommand::Share { .. } => share(),
+        DrandCommand::GenerateKeypair { .. } => keygen(),
+        DrandCommand::Group { .. } => group(),
+        DrandCommand::CheckGroup { .. } => check_group(),
+        DrandCommand::Ping { .. } => ping(),
+        DrandCommand::Reset { .. } => reset(),
+        DrandCommand::Get { .. } => get(),
+        DrandCommand::Show { .. } => show(),
+    }
+}
+
+impl Drand {
+    /// Initialize the logger according to the provided level.
+    fn setup_logger(&self) {
+        let log_level = match self.verbose {
+            2 => log::LevelFilter::Debug,
+            _ => log::LevelFilter::Info,
+        };
+
+        logger::init_level(log_level).expect("failed to initialize the logger");
+    }
+}
+
+pub fn share() -> Result<()> {
+    info!("share");
+
+    Ok(())
+}
+
+pub fn keygen() -> Result<()> {
+    info!("keygen");
+
+    Ok(())
+}
+
+pub fn group() -> Result<()> {
+    info!("group");
+
+    Ok(())
+}
+
+pub fn check_group() -> Result<()> {
+    info!("check_group");
+
+    Ok(())
+}
+
+pub fn ping() -> Result<()> {
+    info!("group");
+
+    Ok(())
+}
+
+pub fn reset() -> Result<()> {
+    info!("group");
+
+    Ok(())
+}
+
+pub fn get() -> Result<()> {
+    info!("get");
+
+    Ok(())
+}
+
+pub fn show() -> Result<()> {
+    info!("show");
+
+    Ok(())
 }

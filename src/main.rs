@@ -298,7 +298,7 @@ pub fn group(
     out: Option<&PathBuf>,
 ) -> Result<()> {
     ensure!(
-        key_paths.len() >= 3,
+        existing_group.is_some() || key_paths.len() >= 3,
         "groups must be at least 3 nodes large"
     );
 

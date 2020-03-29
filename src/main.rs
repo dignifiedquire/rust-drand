@@ -2,15 +2,15 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use humantime::Duration;
 use lazy_static::lazy_static;
-use log::{info, warn};
+use log::info;
 use structopt::StructOpt;
 use url::Url;
 
 use drand::{
-    core, daemon,
+    daemon,
     key::{self, Store},
     logger,
 };
@@ -122,6 +122,9 @@ enum DrandCommand {
         /// Period to write in the group.toml file
         #[structopt(long)]
         period: Option<Duration>,
+        /// The identites of the group to create/insert into the group.
+        #[structopt(parse(from_os_str))]
+        keys: Vec<PathBuf>,
     },
     /// Check node in the group for accessibility over the gRPC communication.
     CheckGroup {
@@ -234,7 +237,7 @@ fn main() -> Result<()> {
             address,
             tls_disable,
         } => keygen(&address, tls_disable, &config_folder),
-        DrandCommand::Group { .. } => group(),
+        DrandCommand::Group { keys, .. } => group(&keys),
         DrandCommand::CheckGroup { .. } => check_group(),
         DrandCommand::Ping { .. } => ping(),
         DrandCommand::Reset { .. } => reset(),
@@ -284,8 +287,31 @@ pub fn keygen(address: &Url, insecure: bool, config_folder: &PathBuf) -> Result<
     Ok(())
 }
 
-pub fn group() -> Result<()> {
-    info!("group");
+pub fn group(key_paths: &[PathBuf]) -> Result<()> {
+    ensure!(
+        key_paths.len() >= 3,
+        "groups must be at least 3 nodes large"
+    );
+
+    let public_keys: Vec<_> = key_paths
+        .iter()
+        .map(|key_path| {
+            info!("reading public identity from {}", key_path.display());
+            key::load_public_key(key_path)
+        })
+        .collect::<Result<_>>()?;
+
+    // TODO: handles `beacon period` phase
+    let threshold = key::default_threshold(key_paths.len());
+
+    // TODO: handle merges
+    let group = key::Group::new(public_keys, threshold);
+
+    // TODO: write to file if `out` is set.
+    info!(
+        "Copy the following snippet into a new group.toml fil and distribute to all participants:"
+    );
+    info!("\n{}", toml::to_string_pretty(&group)?);
 
     Ok(())
 }

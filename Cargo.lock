@@ -272,6 +272,7 @@ dependencies = [
  "ansi_term 0.12.1",
  "anyhow",
  "atty",
+ "blake2b_simd",
  "bls-signatures",
  "hex",
  "home",

@@ -1,13 +1,14 @@
 #![deny(clippy::all)]
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{ensure, Context, Result};
 use humantime::Duration;
 use lazy_static::lazy_static;
+use libp2p::{multiaddr, Multiaddr};
 use log::info;
 use structopt::StructOpt;
-use url::Url;
 
 use drand::{
     daemon,
@@ -19,6 +20,14 @@ const DEFAULT_FOLDER_NAME: &str = ".drand";
 
 lazy_static! {
     static ref DEFAULT_TIMEOUT: Duration = std::time::Duration::from_secs(60).into();
+}
+
+/// Parse an address as multiaddr or as regular url.
+pub fn multiaddr_from_url(url: &str) -> std::result::Result<Multiaddr, multiaddr::FromUrlErr> {
+    match Multiaddr::from_str(url) {
+        Ok(addr) => Ok(addr),
+        Err(_) => multiaddr::from_url(url),
+    }
 }
 
 #[derive(Debug, StructOpt)]
@@ -39,35 +48,16 @@ struct Drand {
 enum DrandCommand {
     /// Start the drand daemon.
     Start {
-        /// Set the TLS certificate chain (in PEM format) for this drand node.
-        /// The certificates have to be specified as a list of whitespace-separated file paths.
-        /// This parameter is required by default and can only be omitted if the --tls-disable flag is used.
-        #[structopt(long, short = "c", parse(from_os_str), required_unless = "tls-disable")]
-        tls_cert: Option<PathBuf>,
-        /// Set the TLS private key (in PEM format) for this drand node.
-        /// The key has to be specified as a file path.
-        /// This parameter is required by default and can only be omitted if the --tls-disable flag is used.
-        #[structopt(long, short = "k", parse(from_os_str), required_unless = "tls-disable")]
-        tls_key: Option<PathBuf>,
-        /// Disable TLS for all communications (not recommended).
-        #[structopt(long, short = "d")]
-        tls_disable: bool,
         /// Set the port you want to listen to for control port commands.
         #[structopt(long, default_value = "8888")]
         control: usize,
-        /// Set the listening (binding) address. Useful if you have some kind of proxy.
-        #[structopt(long, short = "l")]
-        listen: Option<String>,
-        /// Directory containing trusted certificates. Useful for testing and self signed certificates
-        #[structopt(long, parse(from_os_str))]
-        certs_dir: Option<PathBuf>,
         /// Push mode forces the daemon to start making beacon requests to the other node, instead of waiting the other
         /// nodes contact it to catch-up on the round.
         #[structopt(long)]
         push: bool,
+        /// List of nodes to connecto to.
+        addrs: Vec<Multiaddr>,
     },
-    /// Stop the drand daemon.
-    Stop {},
     /// Launch a sharing protocol. If one group is given as
     /// argument, drand launches a DKG protocol to create a distributed
     /// keypair between all participants listed in the group. An
@@ -104,10 +94,8 @@ enum DrandCommand {
     /// Generate the longterm keypair (drand.private, drand.public) for this node.
     GenerateKeypair {
         /// The public address for other nodes to contact.
-        address: Url,
-        /// Disable TLS for all communications (not recommended).
-        #[structopt(long, short = "d")]
-        tls_disable: bool,
+        #[structopt(parse(try_from_str = multiaddr_from_url))]
+        address: Multiaddr,
     },
     /// Merge the given list of whitespace-separated drand.public keys into the group.toml file if one is provided,
     /// if not, create a new group.toml file with the given identites.
@@ -230,13 +218,9 @@ fn main() -> Result<()> {
     let config_folder = opts.folder.unwrap_or_else(get_default_folder);
 
     match opts.cmd {
-        DrandCommand::Start { .. } => daemon::start(),
-        DrandCommand::Stop { .. } => daemon::stop(),
+        DrandCommand::Start { addrs, .. } => daemon::start(addrs, &config_folder),
         DrandCommand::Share { .. } => share(),
-        DrandCommand::GenerateKeypair {
-            address,
-            tls_disable,
-        } => keygen(&address, tls_disable, &config_folder),
+        DrandCommand::GenerateKeypair { address } => keygen(address, &config_folder),
         DrandCommand::Group {
             keys,
             group: existing_group,
@@ -269,14 +253,9 @@ pub fn share() -> Result<()> {
     Ok(())
 }
 
-pub fn keygen(address: &Url, insecure: bool, config_folder: &PathBuf) -> Result<()> {
-    let key_pair = if insecure {
-        info!("Generating private / public key pair without TLS.");
-        key::Pair::new(address)?
-    } else {
-        info!("Generating private / public key pair with TLS indication.");
-        key::Pair::new_tls(address)?
-    };
+pub fn keygen(address: Multiaddr, config_folder: &PathBuf) -> Result<()> {
+    info!("Generating private / public key pair.");
+    let key_pair = key::Pair::new(address)?;
 
     let store = key::FileStore::new(config_folder)?;
     store.save_key_pair(&key_pair)?;

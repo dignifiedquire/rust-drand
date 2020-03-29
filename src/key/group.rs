@@ -98,16 +98,18 @@ mod tests {
 
     use super::super::Pair;
 
+    use libp2p::multiaddr::multiaddr;
+
     #[test]
     fn group_save_load_test() {
         let n = 3;
 
         let key_pairs: Vec<_> = (0..n)
-            .map(|i| Pair::new(&format!("http://cool.com:808{}", i).parse().unwrap()).unwrap())
+            .map(|i| Pair::new(multiaddr!(Ip4([127, 0, 0, i]), Tcp(1234u16))).unwrap())
             .collect();
 
         let ids: Vec<_> = key_pairs.iter().map(|kp| kp.public().clone()).collect();
-        let threshold = default_threshold(n);
+        let threshold = default_threshold(n as usize);
 
         let group = Group::new(ids, threshold);
 

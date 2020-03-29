@@ -241,8 +241,8 @@ fn main() -> Result<()> {
             keys,
             group: existing_group,
             out,
-            ..
-        } => group(&keys, existing_group.as_ref(), out.as_ref()),
+            period,
+        } => group(&keys, existing_group.as_ref(), out.as_ref(), period),
         DrandCommand::CheckGroup { .. } => check_group(),
         DrandCommand::Ping { .. } => ping(),
         DrandCommand::Reset { .. } => reset(),
@@ -296,6 +296,7 @@ pub fn group(
     key_paths: &[PathBuf],
     existing_group: Option<&PathBuf>,
     out: Option<&PathBuf>,
+    period: Option<Duration>,
 ) -> Result<()> {
     ensure!(
         existing_group.is_some() || key_paths.len() >= 3,
@@ -310,10 +311,9 @@ pub fn group(
         })
         .collect::<Result<_>>()?;
 
-    // TODO: handles `beacon period` phase
     let threshold = key::default_threshold(key_paths.len());
 
-    let group = if let Some(existing_group_path) = existing_group {
+    let mut group = if let Some(existing_group_path) = existing_group {
         let mut group: key::Group =
             key::load_from_file(existing_group_path).context("failed to load group")?;
         group.merge(&public_keys);
@@ -321,6 +321,8 @@ pub fn group(
     } else {
         key::Group::new(public_keys, threshold)
     };
+
+    *group.period_mut() = period.map(Into::into);
 
     if let Some(out) = out {
         key::write_to_file(out, &group).context("failed to write group")?;

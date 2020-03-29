@@ -82,6 +82,14 @@ impl Group {
 
         hex::encode(&hash.finalize())
     }
+
+    pub fn period(&self) -> &Option<Duration> {
+        &self.period
+    }
+
+    pub fn period_mut(&mut self) -> &mut Option<Duration> {
+        &mut self.period
+    }
 }
 
 #[cfg(test)]

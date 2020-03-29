@@ -125,7 +125,7 @@ mod tests {
 
     #[async_std::test]
     async fn test_server_client_basics() {
-        let (sender, receiver) = channel(1);
+        let (sender, _receiver) = channel(1);
         let server = Server::new(sender);
         let s = task::spawn(async move { server.listen("127.0.0.1:8888").await.unwrap() });
         task::sleep(std::time::Duration::from_millis(400)).await;

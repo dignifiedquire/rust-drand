@@ -4,7 +4,7 @@ use blake2b_simd::Params;
 use bls_signatures::Serialize as BlsSerialize;
 use serde::{Deserialize, Serialize};
 
-use super::Identity;
+use super::{default_threshold, Identity};
 
 /// Holds all information about a group of drand nodes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +24,7 @@ pub struct Group {
 pub struct DistPublic {}
 
 impl Group {
+    /// Creates a minimal group.
     pub fn new(mut nodes: Vec<Identity>, threshold: usize) -> Self {
         // TODO: verify this sorting matches what the go impl does
         nodes.sort_by_key(|node| node.public_key().as_bytes());
@@ -34,6 +35,26 @@ impl Group {
             threshold,
             public_key: None,
         }
+    }
+
+    /// Creats a group with an existing public key.
+    pub fn load(mut nodes: Vec<Identity>, threshold: usize, public_key: DistPublic) -> Self {
+        // TODO: verify this sorting matches what the go impl does
+        nodes.sort_by_key(|node| node.public_key().as_bytes());
+
+        Group {
+            period: None,
+            nodes,
+            threshold,
+            public_key: Some(public_key),
+        }
+    }
+
+    /// Merges the provided list of nodes into this group.
+    pub fn merge(&mut self, nodes: &[Identity]) {
+        self.threshold = default_threshold(self.nodes.len() + nodes.len());
+        self.nodes.extend_from_slice(nodes);
+        self.nodes.sort_by_key(|node| node.public_key().as_bytes());
     }
 
     /// Returns the list of the current members of this group.
@@ -60,5 +81,31 @@ impl Group {
         }
 
         hex::encode(&hash.finalize())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use super::super::Pair;
+
+    #[test]
+    fn group_save_load_test() {
+        let n = 3;
+
+        let key_pairs: Vec<_> = (0..n)
+            .map(|i| Pair::new(&format!("http://cool.com:808{}", i).parse().unwrap()).unwrap())
+            .collect();
+
+        let ids: Vec<_> = key_pairs.iter().map(|kp| kp.public().clone()).collect();
+        let threshold = default_threshold(n);
+
+        let group = Group::new(ids, threshold);
+
+        let toml_str = toml::to_string(&group).unwrap();
+        let group_ret = toml::from_str(&toml_str).unwrap();
+
+        assert_eq!(group, group_ret);
     }
 }

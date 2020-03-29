@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use humantime::Duration;
 use lazy_static::lazy_static;
 use log::info;
@@ -237,7 +237,12 @@ fn main() -> Result<()> {
             address,
             tls_disable,
         } => keygen(&address, tls_disable, &config_folder),
-        DrandCommand::Group { keys, .. } => group(&keys),
+        DrandCommand::Group {
+            keys,
+            group: existing_group,
+            out,
+            ..
+        } => group(&keys, existing_group.as_ref(), out.as_ref()),
         DrandCommand::CheckGroup { .. } => check_group(),
         DrandCommand::Ping { .. } => ping(),
         DrandCommand::Reset { .. } => reset(),
@@ -287,7 +292,11 @@ pub fn keygen(address: &Url, insecure: bool, config_folder: &PathBuf) -> Result<
     Ok(())
 }
 
-pub fn group(key_paths: &[PathBuf]) -> Result<()> {
+pub fn group(
+    key_paths: &[PathBuf],
+    existing_group: Option<&PathBuf>,
+    out: Option<&PathBuf>,
+) -> Result<()> {
     ensure!(
         key_paths.len() >= 3,
         "groups must be at least 3 nodes large"
@@ -297,22 +306,31 @@ pub fn group(key_paths: &[PathBuf]) -> Result<()> {
         .iter()
         .map(|key_path| {
             info!("reading public identity from {}", key_path.display());
-            key::load_public_key(key_path)
+            key::load_from_file(key_path)
         })
         .collect::<Result<_>>()?;
 
     // TODO: handles `beacon period` phase
     let threshold = key::default_threshold(key_paths.len());
 
-    // TODO: handle merges
-    let group = key::Group::new(public_keys, threshold);
+    let group = if let Some(existing_group_path) = existing_group {
+        let mut group: key::Group =
+            key::load_from_file(existing_group_path).context("failed to load group")?;
+        group.merge(&public_keys);
+        group
+    } else {
+        key::Group::new(public_keys, threshold)
+    };
 
-    // TODO: write to file if `out` is set.
-    info!(
+    if let Some(out) = out {
+        key::write_to_file(out, &group).context("failed to write group")?;
+        info!("Wrote group to {}", out.display());
+    } else {
+        info!(
         "Copy the following snippet into a new group.toml fil and distribute to all participants:"
     );
-    info!("\n{}", toml::to_string_pretty(&group)?);
-
+        info!("\n{}", toml::to_string_pretty(&group)?);
+    }
     Ok(())
 }
 
@@ -323,13 +341,13 @@ pub fn check_group() -> Result<()> {
 }
 
 pub fn ping() -> Result<()> {
-    info!("group");
+    info!("ping");
 
     Ok(())
 }
 
 pub fn reset() -> Result<()> {
-    info!("group");
+    info!("reset");
 
     Ok(())
 }

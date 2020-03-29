@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use log::info;
 
-use super::{Identity, Pair};
+use super::Pair;
 
 /// Abstracts the loading and saving of any private/public cryptographic material to be used by drand.
 pub trait Store {
@@ -88,9 +88,17 @@ impl Store for FileStore {
     }
 }
 
-pub fn load_public_key<P: AsRef<Path>>(path: P) -> Result<Identity> {
+pub fn load_from_file<P: AsRef<Path>, S: serde::de::DeserializeOwned>(path: P) -> Result<S> {
     let bytes = std::fs::read(path.as_ref())
-        .with_context(|| format!("failed to read public key from {}", path.as_ref().display()))?;
-    let pub_key: Identity = toml::from_slice(&bytes).context("failed to deserialize public key")?;
-    Ok(pub_key)
+        .with_context(|| format!("failed to read data from {}", path.as_ref().display()))?;
+    let res = toml::from_slice(&bytes).context("failed to deserialize")?;
+
+    Ok(res)
+}
+
+pub fn write_to_file<P: AsRef<Path>, S: serde::ser::Serialize>(path: P, s: &S) -> Result<()> {
+    let bytes = toml::to_vec(s).context("failed to serialize")?;
+    std::fs::write(path.as_ref(), &bytes)
+        .with_context(|| format!("failed to write : {}", path.as_ref().display()))?;
+    Ok(())
 }

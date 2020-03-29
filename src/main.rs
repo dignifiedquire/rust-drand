@@ -58,6 +58,12 @@ enum DrandCommand {
         /// List of nodes to connecto to.
         addrs: Vec<Multiaddr>,
     },
+    /// Stop a running drand daemon.
+    Stop {
+        /// Set the port you want to listen to for control port commands.
+        #[structopt(long, default_value = "8888")]
+        control: usize,
+    },
     /// Launch a sharing protocol. If one group is given as
     /// argument, drand launches a DKG protocol to create a distributed
     /// keypair between all participants listed in the group. An
@@ -218,7 +224,8 @@ fn main() -> Result<()> {
     let config_folder = opts.folder.unwrap_or_else(get_default_folder);
 
     match opts.cmd {
-        DrandCommand::Start { addrs, .. } => daemon::start(addrs, &config_folder),
+        DrandCommand::Start { addrs, control, .. } => daemon::start(addrs, &config_folder, control),
+        DrandCommand::Stop { control } => daemon::stop(control),
         DrandCommand::Share { .. } => share(),
         DrandCommand::GenerateKeypair { address } => keygen(address, &config_folder),
         DrandCommand::Group {
@@ -228,7 +235,7 @@ fn main() -> Result<()> {
             period,
         } => group(&keys, existing_group.as_ref(), out.as_ref(), period),
         DrandCommand::CheckGroup { .. } => check_group(),
-        DrandCommand::Ping { .. } => ping(),
+        DrandCommand::Ping { control } => ping(control),
         DrandCommand::Reset { .. } => reset(),
         DrandCommand::Get { .. } => get(),
         DrandCommand::Show { .. } => show(),
@@ -321,8 +328,12 @@ pub fn check_group() -> Result<()> {
     Ok(())
 }
 
-pub fn ping() -> Result<()> {
-    info!("ping");
+pub fn ping(control: usize) -> Result<()> {
+    info!("sending ping");
+
+    daemon::ping(control)?;
+
+    info!("received pong");
 
     Ok(())
 }

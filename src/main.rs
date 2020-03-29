@@ -5,10 +5,15 @@ use std::path::PathBuf;
 use anyhow::Result;
 use humantime::Duration;
 use lazy_static::lazy_static;
-use log::info;
+use log::{info, warn};
 use structopt::StructOpt;
+use url::Url;
 
-use drand::{core, daemon, logger};
+use drand::{
+    core, daemon,
+    key::{self, Store},
+    logger,
+};
 
 const DEFAULT_FOLDER_NAME: &str = ".drand";
 
@@ -98,6 +103,8 @@ enum DrandCommand {
     },
     /// Generate the longterm keypair (drand.private, drand.public) for this node.
     GenerateKeypair {
+        /// The public address for other nodes to contact.
+        address: Url,
         /// Disable TLS for all communications (not recommended).
         #[structopt(long, short = "d")]
         tls_disable: bool,
@@ -215,14 +222,18 @@ fn get_default_folder() -> PathBuf {
 fn main() -> Result<()> {
     let opts = Drand::from_args();
 
-    dbg!(&opts);
     opts.setup_logger();
+
+    let config_folder = opts.folder.unwrap_or_else(get_default_folder);
 
     match opts.cmd {
         DrandCommand::Start { .. } => daemon::start(),
         DrandCommand::Stop { .. } => daemon::stop(),
         DrandCommand::Share { .. } => share(),
-        DrandCommand::GenerateKeypair { .. } => keygen(),
+        DrandCommand::GenerateKeypair {
+            address,
+            tls_disable,
+        } => keygen(&address, tls_disable, &config_folder),
         DrandCommand::Group { .. } => group(),
         DrandCommand::CheckGroup { .. } => check_group(),
         DrandCommand::Ping { .. } => ping(),
@@ -250,8 +261,25 @@ pub fn share() -> Result<()> {
     Ok(())
 }
 
-pub fn keygen() -> Result<()> {
-    info!("keygen");
+pub fn keygen(address: &Url, insecure: bool, config_folder: &PathBuf) -> Result<()> {
+    let key_pair = if insecure {
+        info!("Generating private / public key pair without TLS.");
+        key::Pair::new(address)?
+    } else {
+        info!("Generating private / public key pair with TLS indication.");
+        key::Pair::new_tls(address)?
+    };
+
+    let store = key::FileStore::new(config_folder)?;
+    store.save_key_pair(&key_pair)?;
+
+    info!("Generated keys at {}", store.key_folder().display());
+    info!("You can copy paste the following snippet to a common group.toml file:");
+    info!(
+        "\n[[Nodes]]\n{}",
+        toml::to_string_pretty(key_pair.public())?
+    );
+    info!("Or just collect all public key files and use the group command!");
 
     Ok(())
 }

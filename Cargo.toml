@@ -21,3 +21,10 @@ log = { version = "0.4.8", features = ["std"] }
 ansi_term = "0.12.1"
 unicode-segmentation = "1.6.0"
 atty = "0.2.14"
+url = { version = "2.1.1", features = ["serde"] }
+paired = "0.18.0"
+bls-signatures = "0.5.0"
+rand = "0.7.3"
+serde = { version = "1.0.105", features = ["derive"] }
+hex = "0.4.2"
+toml = "0.5.6"

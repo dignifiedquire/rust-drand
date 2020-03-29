@@ -92,10 +92,13 @@ enum DrandCommand {
         /// Source flag allows to provide an executable which output will be used as additional entropy during resharing step.
         #[structopt(long, parse(from_os_str))]
         source: Option<PathBuf>,
-        /// /sed with the source flag allows to only use the user's entropy to pick the dkg secret
+        /// Set with the source flag allows to only use the user's entropy to pick the dkg secret
         /// (won't be mixed with crypto/rand). Should be used for reproducibility and debbuging purposes.
         #[structopt(long, requires = "source")]
         user_source_only: bool,
+        /// Path to the `group.toml` to load the group from.
+        #[structopt(parse(from_os_str))]
+        group: PathBuf,
     },
     /// Generate the longterm keypair (drand.private, drand.public) for this node.
     GenerateKeypair {
@@ -226,7 +229,13 @@ fn main() -> Result<()> {
     match opts.cmd {
         DrandCommand::Start { addrs, control, .. } => daemon::start(addrs, &config_folder, control),
         DrandCommand::Stop { control } => daemon::stop(control),
-        DrandCommand::Share { .. } => share(),
+        DrandCommand::Share {
+            group,
+            control,
+            leader,
+            timeout,
+            ..
+        } => share(&group, leader, timeout, control, &config_folder),
         DrandCommand::GenerateKeypair { address } => keygen(address, &config_folder),
         DrandCommand::Group {
             keys,
@@ -254,8 +263,19 @@ impl Drand {
     }
 }
 
-pub fn share() -> Result<()> {
+pub fn share(
+    group_path: &PathBuf,
+    is_leader: bool,
+    timeout: Duration,
+    control: usize,
+    _config_folder: &PathBuf,
+) -> Result<()> {
     info!("share");
+
+    // TODO: check and handle an existing group
+    // let store = key::FileStore::new(config_folder)?;
+
+    daemon::init_dkg(group_path, is_leader, *timeout, control)?;
 
     Ok(())
 }

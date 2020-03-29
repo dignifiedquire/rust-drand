@@ -37,6 +37,10 @@ impl Group {
         }
     }
 
+    pub fn threshold(&self) -> usize {
+        self.threshold
+    }
+
     /// Creats a group with an existing public key.
     pub fn load(mut nodes: Vec<Identity>, threshold: usize, public_key: DistPublic) -> Self {
         // TODO: verify this sorting matches what the go impl does
@@ -89,6 +93,11 @@ impl Group {
 
     pub fn period_mut(&mut self) -> &mut Option<Duration> {
         &mut self.period
+    }
+
+    /// Find the index of the given identity.
+    pub fn index(&self, other: &Identity) -> Option<usize> {
+        self.nodes.iter().position(|n| n == other)
     }
 }
 

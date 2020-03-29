@@ -1,14 +1,15 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use async_std::prelude::*;
 use async_std::{sync::channel, task};
 use futures::StreamExt;
 use libp2p::Multiaddr;
-use log::info;
+use log::{error, info};
 
 use crate::control;
-use crate::key::{self, Store};
+use crate::key::{self, Group, Store};
 use crate::swarm::{Node, NodeAction};
 
 pub fn start(addrs: Vec<Multiaddr>, config_folder: &PathBuf, control_port: usize) -> Result<()> {
@@ -52,7 +53,44 @@ pub fn start(addrs: Vec<Multiaddr>, config_folder: &PathBuf, control_port: usize
                     actions.send(NodeAction::Stop).await;
                     shutdown_control_sender.send(()).await;
                 }
-                DaemonAction::Node(_action) => todo!(),
+                DaemonAction::Node(action) => actions.send(action).await,
+                DaemonAction::InitDkg {
+                    group_path,
+                    is_leader,
+                    timeout,
+                } => {
+                    let res: Result<()> = {
+                        // Check if group already exists
+                        // TODO
+
+                        // Read Group from source file
+                        let group: Group = key::load_from_file(&group_path)?;
+                        // TODO: ensure at least 5 members
+                        // TODO: ensure threshold < vss.MinimumT(group.len())
+
+                        // Extract Entropy
+
+                        let self_index = match group.index(local_key_pair.public()) {
+                            Some(i) => i,
+                            None => {
+                                bail!("self, not in group: abort");
+                            }
+                        };
+                        // Start DKG if is_leader
+                        let orchestrator = crate::dkg::Orchestrator::new(
+                            &local_key_pair,
+                            self_index,
+                            group.identities(),
+                            group.threshold(),
+                        );
+
+                        // otherwise wait for dkg response
+                        Ok(())
+                    };
+                    if let Err(err) = res {
+                        error!("init-dkg failed: {}", err);
+                    }
+                }
             }
         }
 
@@ -72,8 +110,27 @@ pub fn ping(control_port: usize) -> Result<()> {
     task::block_on(async move { client.ping().await })
 }
 
+pub fn init_dkg(
+    group_path: &PathBuf,
+    is_leader: bool,
+    timeout: Duration,
+    control_port: usize,
+) -> Result<()> {
+    let addr = format!("http://127.0.0.1:{}/", control_port);
+    let client = control::Client::new(addr);
+
+    // TODO: Pass optional entropy source info
+
+    task::block_on(async move { client.init_dkg(group_path, is_leader, timeout).await })
+}
+
 /// Action to be executed on the daemon in general, sent from the control.
 pub enum DaemonAction {
     Stop,
     Node(NodeAction),
+    InitDkg {
+        group_path: PathBuf,
+        is_leader: bool,
+        timeout: Duration,
+    },
 }

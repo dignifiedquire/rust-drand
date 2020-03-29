@@ -1,7 +1,11 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
 use anyhow::{anyhow, Result};
 use async_std::sync::Sender;
 use serde::{Deserialize, Serialize};
 
+/// Server that responds to the control rpc commands.
 pub struct Server {
     server: tide::Server<State>,
 }
@@ -40,6 +44,23 @@ impl Server {
 async fn main_control_point(mut req: tide::Request<State>) -> Result<ControlResponse> {
     match req.body_json().await? {
         ControlRequest::Ping => Ok(ControlResponse::Pong),
+        ControlRequest::InitDkg {
+            group_path,
+            is_leader,
+            timeout,
+        } => {
+            let state = req.state();
+            state
+                .control_channel
+                .send(crate::daemon::DaemonAction::InitDkg {
+                    group_path,
+                    is_leader,
+                    timeout,
+                })
+                .await;
+
+            Ok(ControlResponse::InitDkgSuccess)
+        }
         ControlRequest::Stop => {
             let state = req.state();
             state
@@ -55,12 +76,18 @@ async fn main_control_point(mut req: tide::Request<State>) -> Result<ControlResp
 enum ControlRequest {
     Ping,
     Stop,
+    InitDkg {
+        group_path: PathBuf,
+        is_leader: bool,
+        timeout: Duration,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum ControlResponse {
     Pong,
     Stopped,
+    InitDkgSuccess,
     Error(String),
 }
 
@@ -101,6 +128,26 @@ impl Client {
         match self.post(&ControlRequest::Stop).await? {
             ControlResponse::Stopped => Ok(()),
             res => Err(anyhow!("invalid response: {:?}", res)),
+        }
+    }
+
+    /// Start the dkg protocol.
+    pub async fn init_dkg(
+        &self,
+        group_path: &PathBuf,
+        is_leader: bool,
+        timeout: Duration,
+    ) -> Result<()> {
+        match self
+            .post(&ControlRequest::InitDkg {
+                group_path: group_path.clone(),
+                is_leader,
+                timeout,
+            })
+            .await?
+        {
+            ControlResponse::InitDkgSuccess => Ok(()),
+            res => Err(anyhow!("Invalid response: {:?}", res)),
         }
     }
 

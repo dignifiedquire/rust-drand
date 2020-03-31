@@ -14,21 +14,27 @@ mod tests {
 
     #[async_std::test]
     async fn test_dkg_simple_5_3() {
-        dkg_simple(5, 3).await;
+        dkg_simple(5, 3, true).await;
+        dkg_simple(5, 3, false).await;
     }
 
     #[async_std::test]
     async fn test_dkg_simple_10_8() {
-        dkg_simple(10, 8).await;
+        dkg_simple(10, 8, true).await;
+        dkg_simple(10, 8, false).await;
     }
 
     #[async_std::test]
     async fn test_dkg_simple_5_5() {
-        dkg_simple(5, 5).await;
+        // dkg_simple(5, 5, true).await; will fail
+        dkg_simple(5, 5, false).await;
     }
 
-    async fn dkg_simple(n: usize, thr: usize) {
-        println!("- New example with {} nodes and a threshold of {}", n, thr);
+    async fn dkg_simple(n: usize, thr: usize, phase3: bool) {
+        println!(
+            "- New example with {} nodes and a threshold of {} (justification: {})",
+            n, thr, phase3
+        );
 
         let mut keypairs = Vec::new();
         let mut boards = Vec::new();
@@ -100,7 +106,11 @@ mod tests {
                 let is_leader = i == 0;
 
                 let board = board.start();
-                let node = node.dkg_phase1(&board).await?;
+                let node = if i == 0 && phase3 {
+                    node.dkg_phase1_no_publish(&board).await?
+                } else {
+                    node.dkg_phase1(&board).await?
+                };
 
                 // phase2: read all shares and producing responses
                 let mut board = board.phase2().await?;
@@ -112,7 +122,7 @@ mod tests {
                 println!("{} \t -> node process shares", i);
                 let node = node.dkg_phase2(&mut board, &all_shares).await?;
 
-                let mut board = board.phase3()?;
+                let mut board = board.phase3().await?;
 
                 // end of phase 2: read all responses and see if dkg can finish
                 // if there is need for justifications, nodes will publish
@@ -122,30 +132,26 @@ mod tests {
                 let node = match node {
                     Either::Left(node) => {
                         // needs phase3
-                        if !board.needs_justifications().await {
-                            bail!("inconsistent state");
-                        }
                         let all_justifs = board.get_justifications().await;
                         println!(
                             "- Number of dealers that are pushing justifications: {}",
                             all_justifs.len()
                         );
-
-                        let node = node.dkg_phase3(&all_justifs)?;
-                        println!("\t -> dealer has qualified set {:?}", node.qual());
-                        node
+                        node.dkg_phase3(&all_justifs)
                     }
-                    Either::Right(node) => node,
-                };
+                    Either::Right(node) => Ok(node),
+                }?;
                 let board = board.finish().await?;
 
                 let qual = node.qual()?;
+
+                println!("\t -> dealer has qualified set {:?}", qual);
                 let dist_public = node.dist_public()?;
 
                 println!("- Distributed public key: {:?}", dist_public.public_key());
                 println!("- DKG ended");
 
-                Ok(dist_public.clone())
+                Ok::<_, anyhow::Error>(dist_public.clone())
             }));
         }
 
@@ -154,8 +160,15 @@ mod tests {
             keys.push(task.await.unwrap());
         }
 
-        for key in &keys[1..] {
-            assert_eq!(key.public_key(), keys[0].public_key());
+        if phase3 {
+            // TODO: verify that this is the right expectation.
+            for key in &keys[2..] {
+                assert_eq!(key.public_key(), keys[1].public_key());
+            }
+        } else {
+            for key in &keys[1..] {
+                assert_eq!(key.public_key(), keys[0].public_key());
+            }
         }
     }
 }

@@ -43,6 +43,25 @@ impl Node<Start> {
         })
     }
 
+    #[cfg(test)]
+    pub async fn dkg_phase1_no_publish(self, board: &Board<board::One>) -> Result<Node<One>> {
+        let Self {
+            public,
+            peer_id,
+            index,
+            state,
+        } = self;
+
+        let (ndkg, _shares) = state.0.shares();
+
+        Ok(Node {
+            public,
+            peer_id,
+            index,
+            state: One(ndkg),
+        })
+    }
+
     pub async fn dkg_phase1(self, board: &Board<board::One>) -> Result<Node<One>> {
         let Self {
             public,
@@ -118,7 +137,7 @@ impl Node<Two> {
             Err((ndkg, justifs)) => {
                 // publish justifications if you have some
                 // Nodes may just see that justifications are needed but they
-                // don't have to create any, since no  complaint have been filed
+                // don't have to create any, since no complaint has been filed
                 // against their deal.
                 if let Some(j) = justifs {
                     board

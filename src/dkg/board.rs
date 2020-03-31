@@ -65,7 +65,7 @@ impl Board<Start> {
             state: Start,
             sender,
             receiver,
-            timeout: Duration::from_secs(10),
+            timeout: Duration::from_secs(5),
             stop_source: None,
             deals: Default::default(),
             deals_done: None,
@@ -179,7 +179,26 @@ impl Board<One> {
 }
 
 impl Board<Two> {
-    pub fn phase3(self) -> Result<Board<Three>> {
+    pub async fn phase3(self) -> Result<Board<Three>> {
+        match self
+            .responses_done
+            .as_ref()
+            .expect("not started")
+            .recv()
+            .timeout(self.timeout)
+            .await
+        {
+            Ok(Some(())) => {
+                println!("received all responses");
+            }
+            Ok(None) => {
+                println!("phase2 aborted due to interrupt");
+            }
+            Err(_) => {
+                println!("stopped phase2 due to timeout");
+            }
+        }
+
         Ok(self.set_state(Three))
     }
 
@@ -205,6 +224,27 @@ impl Board<Two> {
 
 impl Board<Three> {
     pub async fn finish(mut self) -> Result<Board<Done>> {
+        if self.needs_justifications().await {
+            match self
+                .justifications_done
+                .as_ref()
+                .expect("not started")
+                .recv()
+                .timeout(self.timeout)
+                .await
+            {
+                Ok(Some(())) => {
+                    println!("received all justifications");
+                }
+                Ok(None) => {
+                    println!("phase3 aborted due to interrupt");
+                }
+                Err(_) => {
+                    println!("stopped phase3 due to timeout");
+                }
+            }
+        }
+
         self.stop();
         Ok(self.set_state(Done))
     }
@@ -263,17 +303,9 @@ impl<S> Board<S> {
     }
 
     pub async fn needs_justifications(&self) -> bool {
-        // if there is no complaint we dont need any justifications
-        self.responses.read().await.values().any(|response| {
-            response.responses.iter().any(|resp| {
-                if let Status::Complaint = resp.status {
-                    true
-                } else {
-                    false
-                }
-            })
-        })
+        !self.responses.read().await.is_empty()
     }
+
     pub async fn get_shares(&self) -> Vec<dkg::BundledShares<KeyCurve>> {
         self.deals.read().await.values().cloned().collect()
     }

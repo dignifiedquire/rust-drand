@@ -1,143 +1,288 @@
-use threshold::dkg;
+use std::collections::HashMap;
+use std::time::Duration;
+
+use anyhow::{bail, ensure, Result};
+use async_std::prelude::*;
+use async_std::sync::{channel, Arc, Receiver, RwLock, Sender};
+use libp2p::PeerId;
+use log::info;
+use stop_token::StopSource;
+use threshold::dkg::{self, Status};
 use threshold::*;
 
 use super::curve::{KeyCurve, PublicKey};
 
-pub struct Board {
+pub struct Board<S> {
     group: dkg::Group<KeyCurve>,
-    phase1: bool,
-    phase2: bool,
-    phase3: bool,
-    dkg_finished: bool,
-    bundles: Vec<dkg::BundledShares<KeyCurve>>,
-    responses: Vec<dkg::BundledResponses>,
-    justifs: Vec<dkg::BundledJustification<KeyCurve>>,
+    state: S,
+    sender: Sender<(PeerId, ProtocolMessage)>,
+    receiver: Receiver<(PeerId, ProtocolMessage)>,
+    timeout: Duration,
+    /// Token to stop the receiver stream.
+    stop_source: Option<StopSource>,
+    deals: Arc<RwLock<HashMap<PeerId, dkg::BundledShares<KeyCurve>>>>,
+    deals_done: Option<Receiver<()>>,
+    responses: Arc<RwLock<HashMap<PeerId, dkg::BundledResponses>>>,
+    responses_done: Option<Receiver<()>>,
+    justifications: Arc<RwLock<HashMap<PeerId, dkg::BundledJustification<KeyCurve>>>>,
+    justifications_done: Option<Receiver<()>>,
 }
 
-impl Board {
-    pub fn init(group: dkg::Group<KeyCurve>) -> Self {
-        let len = Vec::with_capacity(group.len());
+pub struct Start;
+pub struct One;
+pub struct Two;
+pub struct Three;
+pub struct Done;
+
+/// The messages a participant sends and receives during the dkg.
+pub enum ProtocolMessage {
+    /// Contains the share of participant.
+    Deal(dkg::BundledShares<KeyCurve>),
+    /// Holds the response that a participant broadcasts after receiving a deal.
+    Response(dkg::BundledResponses),
+    /// Holds the justification from a dealer after a participant issued a complaint of a supposedly invalid deal.
+    Justification(dkg::BundledJustification<KeyCurve>),
+}
+
+impl Board<Start> {
+    pub fn init(
+        group: dkg::Group<KeyCurve>,
+        sender: Sender<(PeerId, ProtocolMessage)>,
+        receiver: Receiver<(PeerId, ProtocolMessage)>,
+    ) -> Self {
         Self {
-            group: group,
-            phase1: false,
-            phase2: false,
-            phase3: false,
-            dkg_finished: false,
-            bundles: len,
-            responses: vec![],
-            justifs: vec![],
+            group,
+            state: Start,
+            sender,
+            receiver,
+            timeout: Duration::from_secs(60),
+            stop_source: None,
+            deals: Default::default(),
+            deals_done: None,
+            responses: Default::default(),
+            responses_done: None,
+            justifications: Default::default(),
+            justifications_done: None,
         }
     }
 
-    pub fn dkg_start(&mut self) {
-        self.phase1 = true;
-    }
+    /// Start the DKG process.
+    pub fn start(mut self) -> Board<One> {
+        let deals = self.deals.clone();
+        let responses = self.responses.clone();
+        let justifications = self.justifications.clone();
+        let group_len = self.group.len();
 
-    pub fn dkg_phase2(&mut self) -> Vec<dkg::BundledShares<KeyCurve>> {
-        if !self.phase1 {
-            panic!("can't pass to phase2 if dkg not started");
+        let (deals_done_sender, deals_done_receiver) = channel(1);
+        let (responses_done_sender, responses_done_receiver) = channel(1);
+        let (justifications_done_sender, justifications_done_receiver) = channel(1);
+
+        self.deals_done = Some(deals_done_receiver);
+        self.responses_done = Some(responses_done_receiver);
+        self.justifications_done = Some(justifications_done_receiver);
+
+        let stop_source = StopSource::new();
+        let token = stop_source.stop_token();
+        self.stop_source = Some(stop_source);
+        let mut receiver = token.stop_stream(self.receiver.clone());
+
+        async_std::task::spawn(async move {
+            while let Some((peer, msg)) = receiver.next().await {
+                match msg {
+                    ProtocolMessage::Deal(deal) => {
+                        {
+                            // ensure the lock is dropped
+                            deals.write().await.insert(peer, deal);
+                        }
+                        if deals.read().await.len() == group_len {
+                            deals_done_sender.send(()).await;
+                        }
+                    }
+                    ProtocolMessage::Response(response) => {
+                        {
+                            responses.write().await.insert(peer, response);
+                        }
+                        if responses.read().await.len() == group_len {
+                            responses_done_sender.send(()).await;
+                        }
+                    }
+                    ProtocolMessage::Justification(just) => {
+                        {
+                            justifications.write().await.insert(peer, just);
+                        }
+                        if justifications.read().await.len() == group_len {
+                            justifications_done_sender.send(()).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        self.set_state(One)
+    }
+}
+
+impl Board<One> {
+    pub async fn phase2(self) -> Result<Board<Two>> {
+        match self
+            .deals_done
+            .as_ref()
+            .expect("not started")
+            .recv()
+            .timeout(self.timeout)
+            .await
+        {
+            Ok(Some(())) => {
+                info!("received all deals");
+            }
+            Ok(None) => {
+                info!("phase1 aborted due to interrupt");
+            }
+            Err(_) => {
+                info!("stopped phase1 due to timeout");
+            }
         }
-        self.phase1 = false;
-        self.phase2 = true;
-        return self.bundles.clone();
+
+        Ok(self.set_state(Two))
     }
 
-    pub fn dkg_need_phase3(&self) -> bool {
-        // if there is no complaint we dont need any justifications
-        return self.responses.len() != 0;
-    }
-
-    pub fn dkg_phase3(&mut self) {
-        if !self.phase2 {
-            panic!("can't pass to phase3 if not phase2");
-        }
-        self.phase2 = false;
-        self.phase3 = true;
-    }
-
-    pub fn finish_dkg(&mut self) {
-        if !self.phase3 || !self.dkg_need_phase3() {
-            panic!("can't finish dkg if not in right phase");
-        }
-        self.phase3 = false;
-        self.dkg_finished = true;
-    }
-
-    /// publish_shares is called by each participant of the dkg protocol during
-    /// the phase 1.
+    /// Called by each participant of the dkg protocol during the phase 1.
+    ///
     /// NOTE: this call should verify the authenticity of the sender! This
     /// function only checks the public key at the moment - Needs further
     /// clarification from actual use case
-    pub fn publish_shares(&mut self, sender_pk: &PublicKey, bundle: dkg::BundledShares<KeyCurve>) {
-        if !self.phase1 {
-            panic!("dkg is not in phase1 - can't publish shares");
-        }
-        match self.check_authenticity(sender_pk, bundle.dealer_idx) {
-            Ok(_) => self.bundles.push(bundle),
-            Err(s) => panic!(s),
-        }
+    pub async fn publish_shares(
+        &self,
+        peer_id: PeerId,
+        sender_pk: &PublicKey,
+        bundle: dkg::BundledShares<KeyCurve>,
+    ) -> Result<()> {
+        self.check_authenticity(sender_pk, bundle.dealer_idx)?;
+        self.sender
+            .send((peer_id, ProtocolMessage::Deal(bundle)))
+            .await;
+        Ok(())
+    }
+}
+
+impl Board<Two> {
+    pub fn phase3(self) -> Result<Board<Three>> {
+        Ok(self.set_state(Three))
     }
 
-    /// publish_responses is called during phase 2 by participant that claim
-    /// having received an invalid share.
+    /// Called during phase 2 by participant that claim having received an invalid share.
+    ///
     /// NOTE: this call should verify the authenticity of the sender! This
     /// function only checks the public key at the moment - Needs further
     /// clarification from actual use case
-    pub fn publish_responses(&mut self, sender_pk: &PublicKey, bundle: dkg::BundledResponses) {
-        if !self.phase2 {
-            panic!("dkg is not in phase2 - can't publish responses");
-        }
-        match self.check_authenticity(sender_pk, bundle.share_idx) {
-            Ok(_) => self.responses.push(bundle),
-            Err(e) => panic!(e),
-        }
+    pub async fn publish_responses(
+        &self,
+        peer_id: PeerId,
+        sender_pk: &PublicKey,
+        bundle: dkg::BundledResponses,
+    ) -> Result<()> {
+        self.check_authenticity(sender_pk, bundle.share_idx)?;
+        self.sender
+            .send((peer_id, ProtocolMessage::Response(bundle)))
+            .await;
+        Ok(())
+    }
+}
+
+impl Board<Three> {
+    pub async fn finish(mut self) -> Result<Board<Done>> {
+        self.stop();
+        Ok(self.set_state(Done))
     }
 
-    pub fn publish_justifications(
-        &mut self,
+    pub async fn publish_justifications(
+        &self,
+        peer_id: PeerId,
         sender_pk: &PublicKey,
         bundle: dkg::BundledJustification<KeyCurve>,
-    ) {
-        if !self.phase3 {
-            panic!("dkg is not in phase3 - can't publish justifications");
+    ) -> Result<()> {
+        self.check_authenticity(sender_pk, bundle.dealer_idx)?;
+        self.sender
+            .send((peer_id, ProtocolMessage::Justification(bundle)))
+            .await;
+        Ok(())
+    }
+}
+
+impl<S> Board<S> {
+    pub fn stop(&mut self) {
+        // Interrupts the receiver stream, stopping the task started in `Self::start`.
+        self.stop_source.take();
+    }
+
+    fn set_state<T>(self, new_state: T) -> Board<T> {
+        let Self {
+            group,
+            sender,
+            receiver,
+            timeout,
+            stop_source,
+            deals,
+            deals_done,
+            responses,
+            responses_done,
+            justifications,
+            justifications_done,
+            ..
+        } = self;
+
+        Board {
+            group,
+            state: new_state,
+            sender,
+            receiver,
+            timeout,
+            stop_source,
+            deals,
+            deals_done,
+            responses,
+            responses_done,
+            justifications,
+            justifications_done,
         }
-        match self.check_authenticity(sender_pk, bundle.dealer_idx) {
-            Ok(_) => self.justifs.push(bundle),
-            Err(e) => panic!(e),
-        }
     }
 
-    pub fn get_shares(&self) -> Vec<dkg::BundledShares<KeyCurve>> {
-        return self.bundles.clone();
+    pub async fn needs_justifications(&self) -> bool {
+        // if there is no complaint we dont need any justifications
+        self.responses.read().await.values().any(|response| {
+            response.responses.iter().any(|resp| {
+                if let Status::Complaint = resp.status {
+                    true
+                } else {
+                    false
+                }
+            })
+        })
+    }
+    pub async fn get_shares(&self) -> Vec<dkg::BundledShares<KeyCurve>> {
+        self.deals.read().await.values().cloned().collect()
     }
 
-    pub fn get_responses(&self) -> Vec<dkg::BundledResponses> {
-        return self.responses.clone();
+    pub async fn get_responses(&self) -> Vec<dkg::BundledResponses> {
+        self.responses.read().await.values().cloned().collect()
     }
 
-    pub fn get_justifications(&self) -> Vec<dkg::BundledJustification<KeyCurve>> {
-        return self.justifs.clone();
+    pub async fn get_justifications(&self) -> Vec<dkg::BundledJustification<KeyCurve>> {
+        self.justifications.read().await.values().cloned().collect()
     }
 
-    fn check_authenticity(
-        &self,
-        sender: &PublicKey,
-        claimed_index: Index,
-    ) -> Result<Index, String> {
+    fn check_authenticity(&self, sender: &PublicKey, claimed_index: Index) -> Result<Index> {
         match self.group.index(sender) {
             Some(i) => {
                 // Actual verification
-                if i != claimed_index {
-                    Err(String::from(
-                        "publish shares called with different index than bundle",
-                    ))
-                } else {
-                    Ok(i)
-                }
+                ensure!(
+                    i == claimed_index,
+                    "publish shares called with different index than bundle",
+                );
+
+                Ok(i)
             }
-            None => Err(String::from(
-                "publish shares called with a public that does not belong to group",
-            )),
+            None => bail!("publish shares called with a public that does not belong to group",),
         }
     }
 }

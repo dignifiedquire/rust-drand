@@ -1,151 +1,182 @@
-use std::error::Error;
-
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use futures::future::Either;
+use libp2p::PeerId;
 use threshold::dkg;
 use threshold::sig::ThresholdScheme;
 use threshold::*;
 
-use super::board::Board;
+use super::board::{self, Board};
 use super::curve::{KeyCurve, PrivateKey, PublicKey, Scheme};
 
 /// Node holds the logic of a participants, for the different phases of the example.
-pub struct Node {
+pub struct Node<S> {
     public: PublicKey,
+    peer_id: PeerId,
     // Index is a type alias to represent the index of a participant. It can be
     // changed depending on the size of the network - u16 is likely to work for
     // most cases though.
     index: Index,
-    state: DkgState,
+    state: S,
 }
 
-enum DkgState {
-    Clear,
-    Start(dkg::DKG<KeyCurve>),
-    One(dkg::DKGWaitingShare<KeyCurve>),
-    Two(dkg::DKGWaitingResponse<KeyCurve>),
-    Three(dkg::DKGWaitingJustification<KeyCurve>),
-    Done(dkg::DKGOutput<KeyCurve>),
-    Error(Box<dyn Error>),
-}
+pub struct Start(dkg::DKG<KeyCurve>);
+pub struct One(dkg::DKGWaitingShare<KeyCurve>);
+pub struct Two(dkg::DKGWaitingResponse<KeyCurve>);
+pub struct Three(dkg::DKGWaitingJustification<KeyCurve>);
+pub struct Done(Result<dkg::DKGOutput<KeyCurve>>);
 
-impl Node {
+impl Node<Start> {
     pub fn new(
         index: usize,
         private: PrivateKey,
         public: PublicKey,
+        peer_id: PeerId,
         group: dkg::Group<KeyCurve>,
-    ) -> Self {
+    ) -> Result<Self> {
         // XXX use lifetimes to remove cloning requirement
-        let d = match dkg::DKG::new(private, group.clone()) {
-            Ok(dkg) => dkg,
-            Err(e) => {
-                println!("{}", e);
-                panic!(e)
-            }
-        };
-        Self {
+        let d = dkg::DKG::new(private, group.clone())?;
+        Ok(Self {
             public,
+            peer_id,
             index: index as Index,
-            state: DkgState::Start(d),
+            state: Start(d),
+        })
+    }
+
+    pub async fn dkg_phase1(self, board: &Board<board::One>) -> Result<Node<One>> {
+        let Self {
+            public,
+            peer_id,
+            index,
+            state,
+        } = self;
+
+        let (ndkg, shares) = state.0.shares();
+        board
+            .publish_shares(peer_id.clone(), &public, shares)
+            .await?;
+
+        Ok(Node {
+            public,
+            peer_id,
+            index,
+            state: One(ndkg),
+        })
+    }
+}
+
+impl Node<One> {
+    pub async fn dkg_phase2(
+        self,
+        board: &mut Board<board::Two>,
+        shares: &Vec<dkg::BundledShares<KeyCurve>>,
+    ) -> Result<Node<Two>> {
+        let Self {
+            peer_id,
+            public,
+            index,
+            state,
+        } = self;
+
+        let (ndkg, bundle) = state.0.process_shares(shares)?;
+        if let Some(bundle) = bundle {
+            println!("\t\t -> node publish {} responses", index);
+            board
+                .publish_responses(peer_id.clone(), &public, bundle)
+                .await?;
+        }
+
+        Ok(Node {
+            peer_id,
+            public,
+            index,
+            state: Two(ndkg),
+        })
+    }
+}
+
+impl Node<Two> {
+    pub async fn dkg_endphase2(
+        self,
+        board: &mut Board<board::Three>,
+        bundle: &Vec<dkg::BundledResponses>,
+    ) -> Result<Either<Node<Three>, Node<Done>>> {
+        let Self {
+            peer_id,
+            public,
+            index,
+            state,
+        } = self;
+
+        match state.0.process_responses(bundle) {
+            Ok(output) => Ok(Either::Right(Node {
+                peer_id,
+                public,
+                index,
+                state: Done(Ok(output)),
+            })),
+            Err((ndkg, justifs)) => {
+                // publish justifications if you have some
+                // Nodes may just see that justifications are needed but they
+                // don't have to create any, since no  complaint have been filed
+                // against their deal.
+                if let Some(j) = justifs {
+                    board
+                        .publish_justifications(peer_id.clone(), &public, j)
+                        .await?;
+                }
+
+                Ok(Either::Left(Node {
+                    peer_id,
+                    public,
+                    index,
+                    state: Three(ndkg),
+                }))
+            }
         }
     }
+}
 
-    pub fn dkg_phase1(&mut self, board: &mut Board) {
-        let public = &self.public;
-        take_mut::take(&mut self.state, |state| match state {
-            DkgState::Start(to_phase1) => {
-                let (ndkg, shares) = to_phase1.shares();
-                board.publish_shares(public, shares);
-                DkgState::One(ndkg)
-            }
-            _ => panic!("invalid state"),
-        });
-    }
-
-    pub fn dkg_phase2(&mut self, board: &mut Board, shares: &Vec<dkg::BundledShares<KeyCurve>>) {
-        let public = &self.public;
-        let index = &self.index;
-
-        take_mut::take(&mut self.state, |state| match state {
-            DkgState::One(to_phase2) => match to_phase2.process_shares(shares) {
-                Ok((ndkg, bundle_o)) => {
-                    if let Some(bundle) = bundle_o {
-                        println!("\t\t -> node publish {} responses", index);
-                        board.publish_responses(public, bundle);
-                    }
-                    DkgState::Two(ndkg)
-                }
-                Err(e) => panic!("index {}: {:?}", index, e),
-            },
-            _ => panic!("invalid state"),
-        })
-    }
-
-    pub fn dkg_endphase2(&mut self, board: &mut Board, bundle: &Vec<dkg::BundledResponses>) {
-        let public = &self.public;
-        take_mut::take(&mut self.state, |state| {
-            match state {
-                DkgState::Two(end_phase2) => {
-                    match end_phase2.process_responses(bundle) {
-                        Ok(output) => DkgState::Done(output),
-                        Err((ndkg, justifs)) => {
-                            // publish justifications if you have some
-                            // Nodes may just see that justifications are needed but they
-                            // don't have to create any, since no  complaint have been filed
-                            // against their deal.
-                            if let Some(j) = justifs {
-                                board.publish_justifications(public, j);
-                            }
-                            DkgState::Three(ndkg)
-                        }
-                    }
-                }
-                _ => panic!("invalid state"),
-            }
-        })
-    }
-
+impl Node<Three> {
     pub fn dkg_phase3(
-        &mut self,
+        self,
         justifications: &Vec<dkg::BundledJustification<KeyCurve>>,
-    ) -> Result<()> {
-        take_mut::take(&mut self.state, |state| match state {
-            DkgState::Three(phase3) => match phase3.process_justifications(justifications) {
-                Ok(output) => DkgState::Done(output),
-                Err(e) => DkgState::Error(Box::new(e)),
-            },
-            _ => panic!("invalid state"),
-        });
+    ) -> Result<Node<Done>> {
+        let Self {
+            peer_id,
+            index,
+            public,
+            state,
+        } = self;
 
-        if let DkgState::Error(ref err) = self.state {
-            return Err(anyhow::anyhow!("{}", err));
-        }
-
-        Ok(())
+        let res = state
+            .0
+            .process_justifications(justifications)
+            .map_err(|err| anyhow!(err));
+        Ok(Node {
+            peer_id,
+            public,
+            index,
+            state: Done(res),
+        })
     }
+}
 
-    pub fn partial(&mut self, partial: &[u8]) -> Result<Vec<u8>> {
-        let res = match &self.state {
-            DkgState::Done(out) => Scheme::partial_sign(&out.share, partial)
-                .map_err(|err| anyhow::anyhow!("{}", err))?,
-            _ => {
-                panic!("invalid state");
-            }
-        };
+impl Node<Done> {
+    pub fn partial(&self, partial: &[u8]) -> Result<Vec<u8>> {
+        let state = self.state.0.as_ref().map_err(|err| anyhow!("{}", err))?;
+        let res = Scheme::partial_sign(&state.share, partial).map_err(|err| anyhow!("{}", err))?;
+
         Ok(res)
     }
 
-    pub fn qual(&mut self) -> dkg::Group<KeyCurve> {
-        match &self.state {
-            DkgState::Done(out) => out.qual.clone(),
-            _ => panic!("invalid state"),
-        }
+    pub fn qual(&self) -> Result<&dkg::Group<KeyCurve>> {
+        let state = self.state.0.as_ref().map_err(|err| anyhow!("{}", err))?;
+        Ok(&state.qual)
     }
 
-    pub fn dist_public(&mut self) -> DistPublic<KeyCurve> {
-        match &self.state {
-            DkgState::Done(out) => out.public.clone(),
-            _ => panic!("invalid state"),
-        }
+    pub fn dist_public(&self) -> Result<&DistPublic<KeyCurve>> {
+        let state = self.state.0.as_ref().map_err(|err| anyhow!("{}", err))?;
+        Ok(&state.public)
     }
 }

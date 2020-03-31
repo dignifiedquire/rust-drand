@@ -1,6 +1,5 @@
 use std::{
     io::Error,
-    path::PathBuf,
     task::{Context, Poll},
     time::Duration,
 };

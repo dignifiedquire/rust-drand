@@ -1,32 +1,34 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
+use async_std::sync::channel;
+use futures::future::Either;
 use threshold::dkg;
 use threshold::sig::*;
 use threshold::*;
 
-use super::board::Board;
-use super::curve::{KeyCurve, PrivateKey, PublicKey, Scheme};
-use super::node::Node;
+use super::board::{self, Board};
+use super::curve::{KeyCurve, Scheme};
+use super::node::{self, Node};
 
 use crate::key;
 
-pub struct Orchestrator {
+pub struct Orchestrator<S, T> {
     thr: usize,
     /// The node data of the caller.
-    node: Node,
+    node: Node<S>,
     self_index: usize,
-    board: Board,
+    board: Board<T>,
     // qualified group of nodes after the dkg protocol
     qual: Option<dkg::Group<KeyCurve>>,
     dist_public: Option<DistPublic<KeyCurve>>,
 }
 
-impl Orchestrator {
+impl Orchestrator<node::Start, board::Start> {
     pub fn new(
         self_key: &key::Pair,
         self_index: usize,
         keypairs: &[key::Identity],
         thr: usize,
-    ) -> Orchestrator {
+    ) -> Result<Orchestrator<node::Start, board::Start>> {
         let n = keypairs.len();
 
         println!("- New example with {} nodes and a threshold of {}", n, thr);
@@ -44,76 +46,99 @@ impl Orchestrator {
             Ok(group) => group,
             Err(e) => panic!(e),
         };
-        let board = Board::init(group.clone());
+        let (sender, receiver) = channel(10);
+
+        let board = Board::init(group.clone(), sender.clone(), receiver.clone());
         let node = Node::new(
             self_index,
             self_key.private().clone().into(),
             self_key.public().public_key().clone().into(),
+            self_key.public().peer_id().clone(),
             group,
-        );
+        )?;
 
-        Self {
+        Ok(Self {
             thr,
             node,
             self_index,
             board,
             qual: None,
             dist_public: None,
-        }
+        })
     }
 
     /// run the dkg phase by phase
-    /// if phase3 is set to true, the orchestrator simulates an invalid
-    /// deal/share such that it requires a justification phase.
-    pub fn run_dkg(&mut self, phase3: bool) -> Result<()> {
-        println!("- DKG starting (justification? {:?})", phase3);
-        self.board.dkg_start();
+    pub async fn run_dkg(self) -> Result<Orchestrator<node::Done, board::Done>> {
+        println!("- DKG starting");
+        let Self {
+            thr,
+            node,
+            self_index,
+            board,
+            mut qual,
+            mut dist_public,
+        } = self;
+
+        let board = board.start();
+
         // phase1: publishing shares
 
         println!("\t -> publish shares");
-        self.node.dkg_phase1(&mut self.board);
-
+        let node = node.dkg_phase1(&board).await?;
         // phase2: read all shares and producing responses
-        self.board.dkg_phase2();
+        let mut board = board.phase2().await?;
         println!("- Phase 2: processing shares and publishing potential responses");
-        let all_shares = self.board.get_shares();
 
+        let all_shares = board.get_shares().await;
         println!("\t -> node process shares");
-        self.node.dkg_phase2(&mut self.board, &all_shares);
+        let node = node.dkg_phase2(&mut board, &all_shares).await?;
 
-        if self.board.dkg_need_phase3() {
-            println!("- Phase 3 required since responses have been issued");
-            self.board.dkg_phase3();
-        } else {
-            println!("- Final phase of dkg - computing shares");
-            self.board.finish_dkg();
-        }
+        let mut board = board.phase3()?;
 
         // end of phase 2: read all responses and see if dkg can finish
         // if there is need for justifications, nodes will publish
-        let all_responses = self.board.get_responses();
-        self.node.dkg_endphase2(&mut self.board, &all_responses);
+        let all_responses = board.get_responses().await;
+        let node = node.dkg_endphase2(&mut board, &all_responses).await?;
 
-        if self.board.dkg_need_phase3() {
-            let all_justifs = self.board.get_justifications();
-            println!(
-                "- Number of dealers that are pushing justifications: {}",
-                all_justifs.len()
-            );
+        let node = match node {
+            Either::Left(node) => {
+                // needs phase3
+                if !board.needs_justifications().await {
+                    bail!("inconsistent state");
+                }
+                let all_justifs = board.get_justifications().await;
+                println!(
+                    "- Number of dealers that are pushing justifications: {}",
+                    all_justifs.len()
+                );
 
-            self.node.dkg_phase3(&all_justifs)?;
-            self.qual = Some(self.node.qual());
-            self.dist_public = Some(self.node.dist_public());
-            println!("\t -> dealer has qualified set {:?}", self.node.qual());
-        }
+                let node = node.dkg_phase3(&all_justifs)?;
+                qual = Some(node.qual()?.clone());
+                dist_public = Some(node.dist_public()?.clone());
+                println!("\t -> dealer has qualified set {:?}", node.qual());
+                node
+            }
+            Either::Right(node) => node,
+        };
+        let board = board.finish().await?;
 
-        let d = self.dist_public.take().unwrap();
+        let d = dist_public.unwrap();
         println!("- Distributed public key: {:?}", d.public_key());
-        self.dist_public = Some(d);
+        let dist_public = Some(d);
         println!("- DKG ended");
-        Ok(())
-    }
 
+        Ok(Orchestrator {
+            thr,
+            node,
+            self_index,
+            board,
+            qual,
+            dist_public,
+        })
+    }
+}
+
+impl Orchestrator<node::Done, board::Done> {
     pub fn threshold_blind_sign(&mut self, msg: &[u8]) -> Result<()> {
         println!("\nThreshold blind signature example");
         let qual = self.qual.take().unwrap();
@@ -131,7 +156,7 @@ impl Orchestrator {
             .iter()
             .find(|n| n.id() as usize == self.self_index);
         let mut partials = Vec::new();
-        if let Some(qual_match) = qual_match {
+        if let Some(_qual_match) = qual_match {
             println!("\t -> {} is signing partial", self.self_index);
             partials.push(self.node.partial(&blind)?);
         }

@@ -35,6 +35,7 @@ pub struct Three;
 pub struct Done;
 
 /// The messages a participant sends and receives during the dkg.
+#[derive(Clone)]
 pub enum ProtocolMessage {
     /// Contains the share of participant.
     Deal(dkg::BundledShares<KeyCurve>),
@@ -42,6 +43,16 @@ pub enum ProtocolMessage {
     Response(dkg::BundledResponses),
     /// Holds the justification from a dealer after a participant issued a complaint of a supposedly invalid deal.
     Justification(dkg::BundledJustification<KeyCurve>),
+}
+
+impl std::fmt::Debug for ProtocolMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProtocolMessage::Deal(_) => write!(f, "ProtocolMessage::Deal"),
+            ProtocolMessage::Response(_) => write!(f, "ProtocolMessage::Response"),
+            ProtocolMessage::Justification(_) => write!(f, "ProtocolMessage::Justification"),
+        }
+    }
 }
 
 impl Board<Start> {
@@ -55,7 +66,7 @@ impl Board<Start> {
             state: Start,
             sender,
             receiver,
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(10),
             stop_source: None,
             deals: Default::default(),
             deals_done: None,
@@ -88,13 +99,15 @@ impl Board<Start> {
 
         async_std::task::spawn(async move {
             while let Some((peer, msg)) = receiver.next().await {
+                // println!("<< {}: {:?}", peer, msg);
+
                 match msg {
                     ProtocolMessage::Deal(deal) => {
                         {
                             // ensure the lock is dropped
                             deals.write().await.insert(peer, deal);
                         }
-                        if deals.read().await.len() == group_len {
+                        if deals.read().await.len() == group_len - 1 {
                             deals_done_sender.send(()).await;
                         }
                     }
@@ -102,7 +115,7 @@ impl Board<Start> {
                         {
                             responses.write().await.insert(peer, response);
                         }
-                        if responses.read().await.len() == group_len {
+                        if responses.read().await.len() == group_len - 1 {
                             responses_done_sender.send(()).await;
                         }
                     }
@@ -110,7 +123,7 @@ impl Board<Start> {
                         {
                             justifications.write().await.insert(peer, just);
                         }
-                        if justifications.read().await.len() == group_len {
+                        if justifications.read().await.len() == group_len - 1 {
                             justifications_done_sender.send(()).await;
                         }
                     }
@@ -133,13 +146,13 @@ impl Board<One> {
             .await
         {
             Ok(Some(())) => {
-                info!("received all deals");
+                println!("received all deals");
             }
             Ok(None) => {
-                info!("phase1 aborted due to interrupt");
+                println!("phase1 aborted due to interrupt");
             }
             Err(_) => {
-                info!("stopped phase1 due to timeout");
+                println!("stopped phase1 due to timeout");
             }
         }
 
@@ -158,6 +171,7 @@ impl Board<One> {
         bundle: dkg::BundledShares<KeyCurve>,
     ) -> Result<()> {
         self.check_authenticity(sender_pk, bundle.dealer_idx)?;
+        println!(">> {}: deal", peer_id);
         self.sender
             .send((peer_id, ProtocolMessage::Deal(bundle)))
             .await;
@@ -182,6 +196,7 @@ impl Board<Two> {
         bundle: dkg::BundledResponses,
     ) -> Result<()> {
         self.check_authenticity(sender_pk, bundle.share_idx)?;
+        // println!(">> {}: response", peer_id);
         self.sender
             .send((peer_id, ProtocolMessage::Response(bundle)))
             .await;
@@ -202,6 +217,7 @@ impl Board<Three> {
         bundle: dkg::BundledJustification<KeyCurve>,
     ) -> Result<()> {
         self.check_authenticity(sender_pk, bundle.dealer_idx)?;
+        // println!(">> {}: justification", peer_id);
         self.sender
             .send((peer_id, ProtocolMessage::Justification(bundle)))
             .await;

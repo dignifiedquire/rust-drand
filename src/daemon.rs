@@ -77,12 +77,6 @@ pub fn start(addrs: Vec<Multiaddr>, config_folder: &PathBuf, control_port: usize
                             }
                         };
                         // Start DKG if is_leader
-                        let orchestrator = crate::dkg::Orchestrator::new(
-                            &local_key_pair,
-                            self_index,
-                            group.identities(),
-                            group.threshold(),
-                        );
 
                         // otherwise wait for dkg response
                         Ok(())

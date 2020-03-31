@@ -5,7 +5,6 @@ use anyhow::{bail, ensure, Result};
 use async_std::prelude::*;
 use async_std::sync::{channel, Arc, Receiver, RwLock, Sender};
 use libp2p::PeerId;
-use log::info;
 use stop_token::StopSource;
 use threshold::dkg::{self, Status};
 use threshold::*;

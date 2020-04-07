@@ -38,7 +38,7 @@ branch = "master"
 
 [dependencies.threshold]
 git = "https://github.com/celo-org/celo-threshold-bls-rs"
-branch = "cleaning"
+branch = "master"
 
 [dependencies.libp2p]
 git = "https://github.com/libp2p/rust-libp2p"

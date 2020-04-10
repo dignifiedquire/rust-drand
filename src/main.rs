@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{ensure, Context, Result};
+use async_std::task;
 use humantime::Duration;
 use lazy_static::lazy_static;
 use libp2p::{multiaddr, Multiaddr};
@@ -220,35 +221,40 @@ fn get_default_folder() -> PathBuf {
 }
 
 fn main() -> Result<()> {
-    let opts = Drand::from_args();
+    task::block_on(async move {
+        let opts = Drand::from_args();
 
-    opts.setup_logger();
+        opts.setup_logger();
+        let config_folder = opts.folder.unwrap_or_else(get_default_folder);
 
-    let config_folder = opts.folder.unwrap_or_else(get_default_folder);
-
-    match opts.cmd {
-        DrandCommand::Start { addrs, control, .. } => daemon::start(addrs, &config_folder, control),
-        DrandCommand::Stop { control } => daemon::stop(control),
-        DrandCommand::Share {
-            group,
-            control,
-            leader,
-            timeout,
-            ..
-        } => share(&group, leader, timeout, control, &config_folder),
-        DrandCommand::GenerateKeypair { address } => keygen(address, &config_folder),
-        DrandCommand::Group {
-            keys,
-            group: existing_group,
-            out,
-            period,
-        } => group(&keys, existing_group.as_ref(), out.as_ref(), period),
-        DrandCommand::CheckGroup { .. } => check_group(),
-        DrandCommand::Ping { control } => ping(control),
-        DrandCommand::Reset { .. } => reset(),
-        DrandCommand::Get { .. } => get(),
-        DrandCommand::Show { .. } => show(),
-    }
+        match opts.cmd {
+            DrandCommand::Start { addrs, control, .. } => {
+                let config = daemon::Config::new(addrs, config_folder, control);
+                let mut d = daemon::Daemon::new(config)?;
+                d.start().await
+            }
+            DrandCommand::Stop { control } => daemon::stop(control).await,
+            DrandCommand::Share {
+                group,
+                control,
+                leader,
+                timeout,
+                ..
+            } => share(&group, leader, timeout, control, &config_folder).await,
+            DrandCommand::GenerateKeypair { address } => keygen(address, &config_folder),
+            DrandCommand::Group {
+                keys,
+                group: existing_group,
+                out,
+                period,
+            } => group(&keys, existing_group.as_ref(), out.as_ref(), period),
+            DrandCommand::CheckGroup { .. } => check_group(),
+            DrandCommand::Ping { control } => ping(control).await,
+            DrandCommand::Reset { .. } => reset(),
+            DrandCommand::Get { .. } => get(),
+            DrandCommand::Show { .. } => show(),
+        }
+    })
 }
 
 impl Drand {
@@ -263,7 +269,7 @@ impl Drand {
     }
 }
 
-pub fn share(
+pub async fn share(
     group_path: &PathBuf,
     is_leader: bool,
     timeout: Duration,
@@ -275,7 +281,7 @@ pub fn share(
     // TODO: check and handle an existing group
     // let store = key::FileStore::new(config_folder)?;
 
-    daemon::init_dkg(group_path, is_leader, *timeout, control)?;
+    daemon::init_dkg(group_path, is_leader, *timeout, control).await?;
 
     Ok(())
 }
@@ -348,10 +354,10 @@ pub fn check_group() -> Result<()> {
     Ok(())
 }
 
-pub fn ping(control: usize) -> Result<()> {
+pub async fn ping(control: usize) -> Result<()> {
     info!("sending ping");
 
-    daemon::ping(control)?;
+    daemon::ping(control).await?;
 
     info!("received pong");
 

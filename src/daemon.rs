@@ -9,42 +9,82 @@ use libp2p::Multiaddr;
 use log::{error, info};
 
 use crate::control;
-use crate::key::{self, Group, Store};
+use crate::key::{self, Group, Pair, Store};
 use crate::swarm::{Node, NodeAction};
 
-pub fn start(addrs: Vec<Multiaddr>, config_folder: &PathBuf, control_port: usize) -> Result<()> {
-    info!("daemon starting");
+#[derive(Debug)]
+pub struct Config {
+    addrs: Vec<Multiaddr>,
+    config_folder: PathBuf,
+    control_port: usize,
+}
 
-    let store = key::FileStore::new(config_folder)?;
-    let local_key_pair = store.load_key_pair()?;
+impl Config {
+    pub fn new(addrs: Vec<Multiaddr>, config_folder: PathBuf, control_port: usize) -> Self {
+        Self {
+            addrs,
+            config_folder,
+            control_port,
+        }
+    }
+}
 
-    task::block_on(async move {
+#[derive(Debug)]
+pub struct Daemon {
+    /// Configuration for the daemon.
+    config: Config,
+    /// The local key pair.
+    local_key_pair: Pair,
+}
+
+impl Daemon {
+    /// Construct a new daemon.
+    pub fn new(config: Config) -> Result<Self> {
+        let store = key::FileStore::new(&config.config_folder)?;
+        let local_key_pair = store.load_key_pair()?;
+
+        Ok(Self {
+            config,
+            local_key_pair,
+        })
+    }
+
+    fn create_node(&self) -> Result<Node> {
+        Node::new(
+            self.local_key_pair.private_swarm(),
+            self.local_key_pair.public().peer_id(),
+            self.local_key_pair.public().address().clone(),
+        )
+    }
+
+    pub async fn start(&mut self) -> Result<()> {
+        info!("daemon starting");
+
         let (control_sender, mut control_receiver) = channel(100);
         let (shutdown_control_sender, shutdown_control_receiver) = channel(1);
+        let control_addr = format!("127.0.0.1:{}", self.config.control_port);
 
         task::spawn(async move {
             use futures::future::FutureExt;
 
             let control_server = control::Server::new(control_sender);
             // TODO: configurable address
-            let addr = format!("127.0.0.1:{}", control_port);
-            info!("Control server listening at {}", &addr);
+
+            info!("Control server listening at {}", &control_addr);
             control_server
-                .listen(addr)
+                .listen(control_addr)
                 .race(shutdown_control_receiver.recv().map(|_| Ok(())))
                 .await
         });
 
-        let mut node = Node::new(
-            local_key_pair.private_swarm(),
-            local_key_pair.public().peer_id(),
-            local_key_pair.public().address().clone(),
-        )?;
+        // Setup the libp2p node
+        let mut node = self.create_node()?;
         let actions = node.action_sender();
         task::spawn(async move { node.run().await });
 
-        for addr in addrs {
-            actions.send(NodeAction::Dial(addr)).await;
+        // Initial connect to the known peers.
+        for addr in &self.config.addrs {
+            actions.send(NodeAction::Dial(addr.clone())).await;
         }
 
         while let Some(action) = control_receiver.next().await {
@@ -70,7 +110,7 @@ pub fn start(addrs: Vec<Multiaddr>, config_folder: &PathBuf, control_port: usize
 
                         // Extract Entropy
 
-                        let self_index = match group.index(local_key_pair.public()) {
+                        let self_index = match group.index(self.local_key_pair.public()) {
                             Some(i) => i,
                             None => {
                                 bail!("self, not in group: abort");
@@ -89,22 +129,22 @@ pub fn start(addrs: Vec<Multiaddr>, config_folder: &PathBuf, control_port: usize
         }
 
         Ok(())
-    })
+    }
 }
 
-pub fn stop(control_port: usize) -> Result<()> {
+pub async fn stop(control_port: usize) -> Result<()> {
     let addr = format!("http://127.0.0.1:{}/", control_port);
     let client = control::Client::new(addr);
-    task::block_on(async move { client.stop().await })
+    client.stop().await
 }
 
-pub fn ping(control_port: usize) -> Result<()> {
+pub async fn ping(control_port: usize) -> Result<()> {
     let addr = format!("http://127.0.0.1:{}/", control_port);
     let client = control::Client::new(addr);
-    task::block_on(async move { client.ping().await })
+    client.ping().await
 }
 
-pub fn init_dkg(
+pub async fn init_dkg(
     group_path: &PathBuf,
     is_leader: bool,
     timeout: Duration,
@@ -115,7 +155,7 @@ pub fn init_dkg(
 
     // TODO: Pass optional entropy source info
 
-    task::block_on(async move { client.init_dkg(group_path, is_leader, timeout).await })
+    client.init_dkg(group_path, is_leader, timeout).await
 }
 
 /// Action to be executed on the daemon in general, sent from the control.

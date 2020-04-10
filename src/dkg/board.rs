@@ -6,7 +6,7 @@ use async_std::prelude::*;
 use async_std::sync::{channel, Arc, Receiver, RwLock, Sender};
 use libp2p::PeerId;
 use stop_token::StopSource;
-use threshold::dkg::{self, Status};
+use threshold::dkg;
 use threshold::*;
 
 use super::curve::{KeyCurve, PublicKey};

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use anyhow::{bail, Result};
+    use anyhow::Result;
     use async_std::sync::channel;
     use async_std::{sync::Arc, task};
     use futures::future::Either;

@@ -239,6 +239,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf1de2fe8c75bc145a2f577add951f8134889b4795d47466a54a5c846d691693"
 
 [[package]]
+name = "bitvec"
+version = "0.17.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41262f11d771fd4a61aa3ce019fca363b4b6c282fca9da2a31186d3965a47a5c"
+dependencies = [
+ "either",
+ "radium",
+ "serde",
+]
+
+[[package]]
 name = "blake2-rfc"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,6 +515,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69323bff1fb41c635347b8ead484a5ca6c3f11914d784170b158d8449ab07f8e"
+dependencies = [
+ "cfg-if",
+ "crossbeam-channel",
+ "crossbeam-deque",
+ "crossbeam-epoch",
+ "crossbeam-queue",
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -675,6 +700,7 @@ dependencies = [
  "atty",
  "blake2b_simd",
  "bls-signatures",
+ "crossbeam",
  "futures 0.3.4",
  "hex",
  "home",
@@ -686,6 +712,7 @@ dependencies = [
  "paired",
  "rand 0.7.3",
  "serde",
+ "serde_cbor",
  "stop-token",
  "structopt",
  "surf",
@@ -1029,6 +1056,12 @@ dependencies = [
  "string",
  "tokio-io",
 ]
+
+[[package]]
+name = "half"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f36b5f248235f45773d4944f555f83ea61fe07b18b561ccf99d7483d7381e54d"
 
 [[package]]
 name = "hashbrown"
@@ -2066,6 +2099,7 @@ dependencies = [
  "groupy",
  "hkdf",
  "rand_core 0.5.1",
+ "serde",
  "sha2ni",
 ]
 
@@ -2341,6 +2375,12 @@ checksum = "2bdc6c187c65bca4260c9011c9e3132efe4909da44726bad24cf7572ae338d7f"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "radium"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "def50a86306165861203e7f84ecffbbdfdea79f0e51039b33de1e952358c47ac"
 
 [[package]]
 name = "rand"
@@ -2638,6 +2678,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "325a073952621257820e7a3469f55ba4726d8b28657e7e36653d1c36dc2c84ae"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_cbor"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e18acfa2f90e8b735b2836ab8d538de304cbb6729a7360729ea5a895d15a622"
+dependencies = [
+ "half",
+ "serde",
+]
+
+[[package]]
 name = "serde_derive"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2757,12 +2816,6 @@ dependencies = [
  "futures-io",
  "futures-util",
 ]
-
-[[package]]
-name = "smallbitvec"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b17a69077f717ddbf4945f16c34df16a0a251909c6b7c4a45bccdb4d377bf02b"
 
 [[package]]
 name = "smallvec"
@@ -3015,8 +3068,9 @@ dependencies = [
 [[package]]
 name = "threshold"
 version = "0.1.0"
-source = "git+https://github.com/celo-org/celo-threshold-bls-rs#30ccc734a4c0b3f456f24cfac5d3f24c20a74bb9"
+source = "git+https://github.com/dignifiedquire/celo-threshold-bls-rs?branch=feat/serde#fa407cab83401f593040fa93c5ac3420bff84de2"
 dependencies = [
+ "bitvec",
  "chacha20poly1305",
  "fff",
  "groupy",
@@ -3024,8 +3078,9 @@ dependencies = [
  "paired",
  "rand 0.7.3",
  "rand_core 0.5.1",
+ "serde",
+ "serde_bytes",
  "sha2",
- "smallbitvec",
 ]
 
 [[package]]

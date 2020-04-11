@@ -1,9 +1,3 @@
-use std::{
-    io::Error,
-    task::{Context, Poll},
-    time::Duration,
-};
-
 use anyhow::Result;
 use async_std::prelude::*;
 use async_std::{
@@ -22,6 +16,12 @@ use libp2p::{
     yamux, Multiaddr, NetworkBehaviour, PeerId, Swarm, Transport,
 };
 use log::{info, warn};
+use serde::{Deserialize, Serialize};
+use std::{
+    io::Error,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 type Libp2pStream = Boxed<(PeerId, StreamMuxerBox), Error>;
 type Libp2pBehaviour = NodeBehaviour;
@@ -29,24 +29,45 @@ type Libp2pBehaviour = NodeBehaviour;
 pub struct Node {
     swarm: Swarm<Libp2pBehaviour>,
     topic: floodsub::Topic,
+    dkg_topic: floodsub::Topic,
     action_receiver: Receiver<NodeAction>,
-    action_sender: Sender<NodeAction>,
+    event_sender: Sender<NodeEvent>,
 }
 
+/// Actions that are sent from the the libp2p node from the daemon.
+#[derive(Debug, Clone)]
 pub enum NodeAction {
     Stop,
     Dial(Multiaddr),
+    SendDkg(DkgProtocolMessage),
+}
+
+/// Events that the node emits and are handled by the daemon.
+#[derive(Debug, Clone)]
+pub enum NodeEvent {
+    ReceiveDkg(DkgProtocolMessage),
+}
+
+/// Protocol Messages for the DKG flow. Transmitted via floodsub.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DkgProtocolMessage {
+    Start,
+    Message(crate::dkg::ProtocolMessage),
 }
 
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "NetworkEvent", poll_method = "poll")]
 struct NodeBehaviour {
     floodsub: Floodsub,
+    #[behaviour(ignore)]
+    events: crossbeam::queue::ArrayQueue<NetworkEvent>,
+    #[behaviour(ignore)]
+    dkg_topic: floodsub::Topic,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum NetworkEvent {
-    Dummy,
+    Dkg(std::result::Result<DkgProtocolMessage, serde_cbor::Error>),
 }
 
 impl NodeBehaviour {
@@ -56,11 +77,10 @@ impl NodeBehaviour {
         _: &mut Context,
         _params: &mut impl swarm::PollParameters,
     ) -> Poll<swarm::NetworkBehaviourAction<TBehaviourIn, NetworkEvent>> {
-        // if !self.events.is_empty() {
-        // return Poll::Ready(swarm::NetworkBehaviourAction::GenerateEvent(
-        //     NetworkEvent::Dummy,
-        // ));
-        // }
+        if let Ok(event) = self.events.pop() {
+            return Poll::Ready(swarm::NetworkBehaviourAction::GenerateEvent(event));
+        }
+
         Poll::Pending
     }
 }
@@ -74,6 +94,15 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for NodeBehaviour {
                 String::from_utf8_lossy(&message.data),
                 message.source
             );
+
+            if message.topics.contains(&self.dkg_topic) {
+                // DKG message
+                let parsed = serde_cbor::from_slice(&message.data);
+                if let Err(err) = self.events.push(NetworkEvent::Dkg(parsed)) {
+                    // TODO: handle full queue
+                    warn!("failed to push network event, queue full: {:?}", err);
+                }
+            }
         }
     }
 }
@@ -83,38 +112,39 @@ impl Node {
         local_key: &identity::ed25519::Keypair,
         local_peer_id: &PeerId,
         listen_addr: Multiaddr,
+        action_receiver: Receiver<NodeAction>,
+        event_sender: Sender<NodeEvent>,
     ) -> Result<Self> {
         let local_key = identity::Keypair::Ed25519(local_key.clone());
         info!("Local peer id: {:?}", local_peer_id);
 
         let transport = build_transport(local_key);
 
-        let floodsub_topic = floodsub::Topic::new("drand-dkg");
+        let topic = floodsub::Topic::new("drand");
+        let dkg_topic = floodsub::Topic::new("drand-dkg");
 
         // Create a Swarm to manage peers and events
         let mut swarm = {
             let mut behaviour = NodeBehaviour {
                 floodsub: Floodsub::new(local_peer_id.clone()),
+                dkg_topic: dkg_topic.clone(),
+                events: crossbeam::queue::ArrayQueue::new(100),
             };
 
-            behaviour.floodsub.subscribe(floodsub_topic.clone());
+            behaviour.floodsub.subscribe(topic.clone());
+            behaviour.floodsub.subscribe(dkg_topic.clone());
             Swarm::new(transport, behaviour, local_peer_id.clone())
         };
 
         Swarm::listen_on(&mut swarm, listen_addr)?;
 
-        let (action_sender, action_receiver) = channel(10);
-
         Ok(Node {
             swarm,
-            topic: floodsub_topic,
-            action_sender,
+            topic,
+            dkg_topic,
+            event_sender,
             action_receiver,
         })
-    }
-
-    pub fn action_sender(&self) -> Sender<NodeAction> {
-        self.action_sender.clone()
     }
 
     /// Starts the `Libp2pService` networking stack. This Future resolves when shutdown occurs.
@@ -152,6 +182,19 @@ impl Node {
                             // TODO: only connect to the ones we actually care about.
                             self.swarm.floodsub.add_node_to_partial_view(peer_id);
                         }
+                        swarm::SwarmEvent::Behaviour(ev) => match ev {
+                            NetworkEvent::Dkg(msg) => {
+                                match msg {
+                                    Ok(msg) => {
+                                        // TODO: send on the right channel
+                                        self.event_sender.send(NodeEvent::ReceiveDkg(msg)).await;
+                                    }
+                                    Err(err) => {
+                                        warn!("invalid dkg event: {}", err);
+                                    }
+                                }
+                            }
+                        },
                         _ => {}
                     }
                 }
@@ -181,6 +224,11 @@ impl Node {
                         info!("shutting down");
                         break;
                     }
+                    Some(NodeAction::SendDkg(ref msg)) => {
+                        let bytes =
+                            serde_cbor::to_vec(msg).expect("invalid message formats defined");
+                        self.swarm.floodsub.publish(self.dkg_topic.clone(), bytes)
+                    }
                     None => {
                         info!("action channel dropped");
                         break;
@@ -195,8 +243,6 @@ impl Node {
 
 /// Builds the transport stack that LibP2P will communicate over.
 fn build_transport(local_key: identity::Keypair) -> Libp2pStream {
-    // TODO: support noise IK with restrictions on the peers to the group
-
     let dh_keys = noise::Keypair::<noise::X25519>::from_identity(&local_key)
         .expect("unable to generate Noise Keypair");
 

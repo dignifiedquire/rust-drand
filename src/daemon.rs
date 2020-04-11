@@ -3,14 +3,17 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use async_std::prelude::*;
-use async_std::{sync::channel, task};
+use async_std::{
+    sync::{channel, Receiver, Sender},
+    task,
+};
 use futures::StreamExt;
 use libp2p::Multiaddr;
 use log::{error, info};
 
 use crate::control;
 use crate::key::{self, Group, Pair, Store};
-use crate::swarm::{Node, NodeAction};
+use crate::swarm::{DkgProtocolMessage, Node, NodeAction, NodeEvent};
 
 #[derive(Debug)]
 pub struct Config {
@@ -49,18 +52,24 @@ impl Daemon {
         })
     }
 
-    fn create_node(&self) -> Result<Node> {
+    fn create_node(
+        &self,
+        receiver: Receiver<NodeAction>,
+        sender: Sender<NodeEvent>,
+    ) -> Result<Node> {
         Node::new(
             self.local_key_pair.private_swarm(),
             self.local_key_pair.public().peer_id(),
             self.local_key_pair.public().address().clone(),
+            receiver,
+            sender,
         )
     }
 
     pub async fn start(&mut self) -> Result<()> {
         info!("daemon starting");
 
-        let (control_sender, mut control_receiver) = channel(100);
+        let (control_sender, control_receiver) = channel(100);
         let (shutdown_control_sender, shutdown_control_receiver) = channel(1);
         let control_addr = format!("127.0.0.1:{}", self.config.control_port);
 
@@ -78,27 +87,38 @@ impl Daemon {
         });
 
         // Setup the libp2p node
-        let mut node = self.create_node()?;
-        let actions = node.action_sender();
+        let (action_sender, action_receiver) = channel(10);
+        let (event_sender, event_receiver) = channel(10);
+
+        let actions = action_sender;
+        let mut node = self.create_node(action_receiver, event_sender)?;
+
         task::spawn(async move { node.run().await });
 
         // Initial connect to the known peers.
         for addr in &self.config.addrs {
             actions.send(NodeAction::Dial(addr.clone())).await;
         }
+        enum E {
+            Swarm(NodeEvent),
+            Daemon(DaemonAction),
+        }
 
-        while let Some(action) = control_receiver.next().await {
+        let mut cr = control_receiver.map(E::Daemon);
+        let mut ar = event_receiver.map(E::Swarm);
+
+        while let Some(action) = cr.next().race(ar.next()).await {
             match action {
-                DaemonAction::Stop => {
+                E::Daemon(DaemonAction::Stop) => {
                     actions.send(NodeAction::Stop).await;
                     shutdown_control_sender.send(()).await;
                 }
-                DaemonAction::Node(action) => actions.send(action).await,
-                DaemonAction::InitDkg {
+                E::Daemon(DaemonAction::Node(action)) => actions.send(action).await,
+                E::Daemon(DaemonAction::InitDkg {
                     group_path,
                     is_leader,
                     timeout,
-                } => {
+                }) => {
                     let res: Result<()> = {
                         // Check if group already exists
                         // TODO
@@ -117,12 +137,28 @@ impl Daemon {
                             }
                         };
                         // Start DKG if is_leader
+                        if is_leader {
+                            actions
+                                .send(NodeAction::SendDkg(DkgProtocolMessage::Start))
+                                .await;
+                        }
 
                         // otherwise wait for dkg response
                         Ok(())
                     };
                     if let Err(err) = res {
                         error!("init-dkg failed: {}", err);
+                    }
+                }
+                E::Swarm(NodeEvent::ReceiveDkg(msg)) => {
+                    info!("got dkg message: {:?}", msg);
+                    match msg {
+                        DkgProtocolMessage::Start => {
+                            // TODO: setup board and run dkg
+                        }
+                        DkgProtocolMessage::Message(msg) => {
+                            // TODO: send message to the board
+                        }
                     }
                 }
             }

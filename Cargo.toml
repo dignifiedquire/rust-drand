@@ -19,7 +19,7 @@ log = { version = "0.4.8", features = ["std"] }
 ansi_term = "0.12.1"
 unicode-segmentation = "1.6.0"
 atty = "0.2.14"
-paired = "0.18.0"
+paired = { version = "0.18.0", features = ["serde"] }
 rand = "0.7.3"
 serde = { version = "1.0.105", features = ["derive"] }
 hex = "0.4.2"
@@ -31,14 +31,18 @@ tide = "0.6.0"
 surf = "2.0.0-alpha.0"
 http-client = "1.1.1"
 stop-token = "0.1.2"
+serde_cbor = "0.11.1"
+crossbeam = "0.7.3"
 
 [dependencies.bls-signatures]
 git = "https://github.com/filecoin-project/bls-signatures"
 branch = "master"
 
 [dependencies.threshold]
-git = "https://github.com/celo-org/celo-threshold-bls-rs"
-branch = "master"
+# git = "https://github.com/celo-org/celo-threshold-bls-rs"
+git = "https://github.com/dignifiedquire/celo-threshold-bls-rs"
+# branch = "master"
+branch = "feat/serde"
 default-features = false
 features = ["bls12_381"]
 

@@ -3,4 +3,5 @@ mod curve;
 mod node;
 mod orchestrator;
 
-pub use self::orchestrator::*;
+pub use self::board::*;
+pub use self::node::*;

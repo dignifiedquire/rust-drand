@@ -5,6 +5,7 @@ use anyhow::{bail, ensure, Result};
 use async_std::prelude::*;
 use async_std::sync::{channel, Arc, Receiver, RwLock, Sender};
 use libp2p::PeerId;
+use serde::{Deserialize, Serialize};
 use stop_token::StopSource;
 use threshold::dkg;
 use threshold::*;
@@ -34,7 +35,7 @@ pub struct Three;
 pub struct Done;
 
 /// The messages a participant sends and receives during the dkg.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum ProtocolMessage {
     /// Contains the share of participant.
     Deal(dkg::BundledShares<KeyCurve>),

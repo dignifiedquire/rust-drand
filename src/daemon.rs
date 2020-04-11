@@ -8,7 +8,6 @@ use async_std::{
     sync::{channel, Receiver, Sender},
     task,
 };
-use futures::future::Either;
 use futures::StreamExt;
 use libp2p::{Multiaddr, PeerId};
 use log::{error, info, warn};
@@ -115,48 +114,6 @@ impl Daemon {
         let mut sender = None;
         let mut dkg_is_running = false;
 
-        let run_dkg = |board, node: dkg::Node<dkg::node::Start>| async move {
-            // TODO: deal with errors
-            info!("Phase 1");
-            let node = node.dkg_phase1(&board).await?;
-
-            info!("Phase 2");
-            let mut board = board.phase2().await?;
-            let all_shares = board.get_shares().await;
-            let node = node.dkg_phase2(&mut board, &all_shares).await?;
-
-            info!("Phase 3");
-            let mut board = board.phase3().await?;
-
-            // end of phase 2: read all responses and see if dkg can finish
-            // if there is need for justifications, nodes will publish
-            let all_responses = board.get_responses().await;
-            let node = node.dkg_endphase2(&mut board, &all_responses).await?;
-
-            let node = match node {
-                Either::Left(node) => {
-                    // needs phase3
-                    let all_justifs = board.get_justifications().await;
-                    info!(
-                        "- Number of dealers that are pushing justifications: {}",
-                        all_justifs.len()
-                    );
-                    node.dkg_phase3(&all_justifs)?
-                }
-                Either::Right(node) => node,
-            };
-            let _board = board.finish().await?;
-
-            let qual = node.qual()?;
-
-            info!("\t -> dealer has qualified set {:?}", qual);
-            let dist_public = node.dist_public()?;
-
-            info!("- Distributed public key: {:?}", dist_public.public_key());
-            info!("- DKG ended");
-            Ok::<(), anyhow::Error>(())
-        };
-
         while let Some(action) = cr.next().race(ar.next()).await {
             match action {
                 E::Daemon(DaemonAction::Stop) => {
@@ -199,7 +156,7 @@ impl Daemon {
                         if is_leader {
                             dkg_is_running = true;
                             task::spawn(async move {
-                                if let Err(err) = run_dkg(b, node).await {
+                                if let Err(err) = b.run_dkg(node).await {
                                     error!("dkg failed: {}", err);
                                 } else {
                                     // TODO: signal done
@@ -234,7 +191,7 @@ impl Daemon {
                             if let Some((board, node)) = board.take() {
                                 dkg_is_running = true;
                                 task::spawn(async move {
-                                    if let Err(err) = run_dkg(board, node).await {
+                                    if let Err(err) = board.run_dkg(node).await {
                                         error!("dkg failed: {}", err);
                                     } else {
                                         // TODO: signal done
@@ -305,7 +262,7 @@ async fn setup_board(
     )?;
 
     Ok((
-        dkg::Board::init(dkg_group, from_board_send, to_board_recv, timeout),
+        dkg::Board::new(dkg_group, from_board_send, to_board_recv, timeout),
         node,
         to_board_send,
         from_board_recv,

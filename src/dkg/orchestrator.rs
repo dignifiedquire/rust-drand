@@ -5,7 +5,6 @@ mod tests {
     use anyhow::Result;
     use async_std::sync::channel;
     use async_std::{sync::Arc, task};
-    use futures::future::Either;
     use libp2p::multiaddr::multiaddr;
     use threshold::dkg;
     use threshold::*;
@@ -78,9 +77,9 @@ mod tests {
             channels.push(channel(100));
         }
         let channels = Arc::new(channels);
-        for (i, kp) in keypairs.iter().enumerate() {
+        for (i, _kp) in keypairs.iter().enumerate() {
             let (sender, receiver) = channel(50);
-            let board = Board::init(
+            let board = Board::new(
                 group.clone(),
                 sender,
                 channels[i].1.clone(),
@@ -90,12 +89,11 @@ mod tests {
             let channels = channels.clone();
 
             task::spawn(async move {
-                println!("{} spawning loop", i);
                 while let Some((out_id, msg)) = receiver.recv().await {
                     for (j, (sender, _)) in channels.iter().enumerate() {
                         // floodsub
                         if i != j {
-                            println!("{} -> {}: {:?}", i, j, msg);
+                            // println!("{} -> {}: {:?}", i, j, msg);
                             sender.send((out_id.clone(), msg.clone())).await;
                         }
                     }
@@ -110,46 +108,9 @@ mod tests {
             // node 0 is the leader
             tasks.push(task::spawn(async move {
                 println!("{} - DKG starting", i);
-                let is_leader = i == 0;
 
                 let board = board.start();
-                let node = if i == 0 && phase3 {
-                    node.dkg_phase1_no_publish(&board).await?
-                } else {
-                    node.dkg_phase1(&board).await?
-                };
-
-                // phase2: read all shares and producing responses
-                let mut board = board.phase2().await?;
-                println!(
-                    "{} - Phase 2: processing shares and publishing potential responses",
-                    i
-                );
-                let all_shares = board.get_shares().await;
-                println!("{} \t -> node process shares", i);
-                let node = node.dkg_phase2(&mut board, &all_shares).await?;
-
-                let mut board = board.phase3().await?;
-
-                // end of phase 2: read all responses and see if dkg can finish
-                // if there is need for justifications, nodes will publish
-                let all_responses = board.get_responses().await;
-                let node = node.dkg_endphase2(&mut board, &all_responses).await?;
-
-                let node = match node {
-                    Either::Left(node) => {
-                        // needs phase3
-                        let all_justifs = board.get_justifications().await;
-                        println!(
-                            "- Number of dealers that are pushing justifications: {}",
-                            all_justifs.len()
-                        );
-                        node.dkg_phase3(&all_justifs)
-                    }
-                    Either::Right(node) => Ok(node),
-                }?;
-                let board = board.finish().await?;
-
+                let node = board.run_dkg_test(node, i == 0 && phase3).await?;
                 let qual = node.qual()?;
 
                 println!("\t -> dealer has qualified set {:?}", qual);

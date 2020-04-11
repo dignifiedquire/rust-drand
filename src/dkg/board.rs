@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Result};
 use async_std::prelude::*;
 use async_std::sync::{channel, Arc, Receiver, RwLock, Sender};
+use futures::future::Either;
 use libp2p::PeerId;
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,7 @@ impl std::fmt::Debug for ProtocolMessage {
 }
 
 impl Board<Start> {
-    pub fn init(
+    pub fn new(
         group: dkg::Group<KeyCurve>,
         sender: Sender<(PeerId, ProtocolMessage)>,
         receiver: Receiver<(PeerId, ProtocolMessage)>,
@@ -136,7 +137,76 @@ impl Board<Start> {
 }
 
 impl Board<One> {
-    pub async fn phase2(self) -> Result<Board<Two>> {
+    #[cfg(test)]
+    pub(crate) async fn run_dkg_test(
+        self,
+        node: super::node::Node<super::node::Start>,
+        no_publish: bool,
+    ) -> Result<super::node::Node<super::node::Done>> {
+        info!("Phase 1");
+
+        let node = if no_publish {
+            node.dkg_phase1_no_publish().await?
+        } else {
+            node.dkg_phase1(&self).await?
+        };
+
+        self.dkg_inner(node).await
+    }
+
+    pub async fn run_dkg(
+        self,
+        node: super::node::Node<super::node::Start>,
+    ) -> Result<super::node::Node<super::node::Done>> {
+        info!("Phase 1");
+        let node = node.dkg_phase1(&self).await?;
+
+        self.dkg_inner(node).await
+    }
+
+    async fn dkg_inner(
+        self,
+        node: super::node::Node<super::node::One>,
+    ) -> Result<super::node::Node<super::node::Done>> {
+        info!("Phase 2");
+        let mut board = self.phase2().await?;
+        let all_shares = board.get_shares().await;
+        let node = node.dkg_phase2(&mut board, &all_shares).await?;
+
+        info!("Phase 3");
+        let mut board = board.phase3().await?;
+
+        // end of phase 2: read all responses and see if dkg can finish
+        // if there is need for justifications, nodes will publish
+        let all_responses = board.get_responses().await;
+        let node = node.dkg_endphase2(&mut board, &all_responses).await?;
+
+        let node = match node {
+            Either::Left(node) => {
+                // needs phase3
+                let all_justifs = board.get_justifications().await;
+                info!(
+                    "- Number of dealers that are pushing justifications: {}",
+                    all_justifs.len()
+                );
+                node.dkg_phase3(&all_justifs)?
+            }
+            Either::Right(node) => node,
+        };
+        let _board = board.finish().await?;
+
+        let qual = node.qual()?;
+
+        info!("\t -> dealer has qualified set {:?}", qual);
+        let dist_public = node.dist_public()?;
+
+        info!("- Distributed public key: {:?}", dist_public.public_key());
+        info!("- DKG ended");
+
+        Ok(node)
+    }
+
+    async fn phase2(self) -> Result<Board<Two>> {
         match self
             .deals_done
             .as_ref()
@@ -164,7 +234,7 @@ impl Board<One> {
     /// NOTE: this call should verify the authenticity of the sender! This
     /// function only checks the public key at the moment - Needs further
     /// clarification from actual use case
-    pub async fn publish_shares(
+    pub(super) async fn publish_shares(
         &self,
         peer_id: PeerId,
         sender_pk: &PublicKey,
@@ -179,7 +249,7 @@ impl Board<One> {
 }
 
 impl Board<Two> {
-    pub async fn phase3(self) -> Result<Board<Three>> {
+    async fn phase3(self) -> Result<Board<Three>> {
         match self
             .responses_done
             .as_ref()
@@ -207,7 +277,7 @@ impl Board<Two> {
     /// NOTE: this call should verify the authenticity of the sender! This
     /// function only checks the public key at the moment - Needs further
     /// clarification from actual use case
-    pub async fn publish_responses(
+    pub(super) async fn publish_responses(
         &self,
         peer_id: PeerId,
         sender_pk: &PublicKey,
@@ -222,7 +292,7 @@ impl Board<Two> {
 }
 
 impl Board<Three> {
-    pub async fn finish(mut self) -> Result<Board<Done>> {
+    async fn finish(mut self) -> Result<Board<Done>> {
         if self.needs_justifications().await {
             match self
                 .justifications_done
@@ -248,7 +318,7 @@ impl Board<Three> {
         Ok(self.set_state(Done))
     }
 
-    pub async fn publish_justifications(
+    pub(super) async fn publish_justifications(
         &self,
         peer_id: PeerId,
         sender_pk: &PublicKey,

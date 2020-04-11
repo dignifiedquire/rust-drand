@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use futures::future::Either;
 use libp2p::PeerId;
+use log::info;
 use threshold::dkg;
 use threshold::sig::ThresholdScheme;
 use threshold::*;
@@ -44,7 +45,7 @@ impl Node<Start> {
     }
 
     #[cfg(test)]
-    pub async fn dkg_phase1_no_publish(self, board: &Board<board::One>) -> Result<Node<One>> {
+    pub async fn dkg_phase1_no_publish(self) -> Result<Node<One>> {
         let Self {
             public,
             peer_id,
@@ -99,7 +100,7 @@ impl Node<One> {
 
         let (ndkg, bundle) = state.0.process_shares(shares)?;
         if let Some(bundle) = bundle {
-            println!("\t\t -> node publish {} responses", index);
+            info!("\t\t -> node publish {} responses", index);
             board
                 .publish_responses(peer_id.clone(), &public, bundle)
                 .await?;

@@ -124,18 +124,6 @@ impl Daemon {
             Receiver<(Result<dkg::Node<_>>, Group)>,
         ) = channel(1);
 
-        let save_dkg_result = |res_node, mut group: Group, store: &key::FileStore| -> Result<()> {
-            let node: dkg::Node<dkg::node::Done> = res_node?;
-            store.save_share(node.share()?)?;
-            let dp = node.dist_public()?;
-            store.save_dist_public(&dp)?;
-            group.set_public_key(dp);
-
-            store.save_group(&group)?;
-
-            Ok(())
-        };
-
         let dkg1 = dkg_is_running.clone();
         task::spawn(async move {
             while let Some((res_node, group)) = dkg_done_receiver.next().await {
@@ -146,59 +134,6 @@ impl Daemon {
                 }
             }
         });
-
-        let local_key_pair = &self.local_key_pair;
-
-        let init_dkg = |board: Arc<Mutex<Option<_>>>,
-                        sender: Arc<RwLock<Option<_>>>,
-                        dkg_is_running: Arc<RwLock<bool>>,
-                        dkg_done_sender: Sender<_>,
-                        group_path,
-                        timeout,
-                        is_leader,
-                        actions: Sender<_>| async move {
-            if board.lock().await.is_some() {
-                bail!("dkg already in progress");
-            }
-            // Check if group already exists
-            // TODO
-
-            let (group, b, node, s, mut receiver) =
-                setup_board(local_key_pair, actions.clone(), group_path, timeout).await?;
-            let b = b.start();
-            *sender.write().await = Some(s);
-
-            let actions1 = actions.clone();
-            task::spawn(async move {
-                let actions = actions1;
-                // Forward messages from the board to the network
-                while let Some((_peer, msg)) = receiver.next().await {
-                    info!("sending message: {:?}", &msg);
-                    actions
-                        .send(NodeAction::SendDkg(DkgProtocolMessage::Message(msg)))
-                        .await;
-                }
-            });
-
-            // Start DKG if is_leader
-            if is_leader {
-                *dkg_is_running.write().await = true;
-                let dkg_done_sender = dkg_done_sender.clone();
-                task::spawn(async move {
-                    let node = b.run_dkg(node).await;
-                    dkg_done_sender.send((node, group)).await;
-                });
-
-                actions
-                    .send(NodeAction::SendDkg(DkgProtocolMessage::Start))
-                    .await;
-            } else {
-                *board.lock().await = Some((b, group, node));
-            }
-
-            // otherwise wait for dkg response
-            Ok(())
-        };
 
         while let Some(action) = cr.next().race(ar.next()).await {
             match action {
@@ -213,10 +148,11 @@ impl Daemon {
                     timeout,
                 }) => {
                     info!("Init DKG (leader: {})", is_leader);
-                    let res = init_dkg(
+                    let res = setup_dkg(
                         board.clone(),
                         sender.clone(),
                         dkg_is_running.clone(),
+                        &self.local_key_pair,
                         dkg_done_sender.clone(),
                         group_path,
                         timeout,
@@ -264,6 +200,7 @@ impl Daemon {
     }
 }
 
+/// Prepare the board for DKG.
 async fn setup_board(
     local_key_pair: &Pair,
     actions: Sender<NodeAction>,
@@ -316,6 +253,85 @@ async fn setup_board(
         to_board_send,
         from_board_recv,
     ))
+}
+
+/// Store the results from a successfull DKG.
+fn save_dkg_result(
+    res_node: Result<dkg::Node<dkg::node::Done>>,
+    mut group: Group,
+    store: &key::FileStore,
+) -> Result<()> {
+    let node = res_node?;
+    store.save_share(node.share()?)?;
+    let dp = node.dist_public()?;
+    store.save_dist_public(&dp)?;
+    group.set_public_key(dp);
+
+    store.save_group(&group)?;
+
+    Ok(())
+}
+
+/// Setup a DKG.
+async fn setup_dkg(
+    board: Arc<
+        Mutex<
+            Option<(
+                dkg::Board<dkg::board::One>,
+                Group,
+                dkg::Node<dkg::node::Start>,
+            )>,
+        >,
+    >,
+    sender: Arc<RwLock<Option<Sender<(PeerId, dkg::ProtocolMessage)>>>>,
+    dkg_is_running: Arc<RwLock<bool>>,
+    local_key_pair: &key::Pair,
+    dkg_done_sender: Sender<(Result<dkg::Node<dkg::node::Done>>, Group)>,
+    group_path: PathBuf,
+    timeout: Duration,
+    is_leader: bool,
+    actions: Sender<NodeAction>,
+) -> Result<()> {
+    if *dkg_is_running.read().await {
+        bail!("dkg already in progress");
+    }
+    // Check if group already exists
+    // TODO
+
+    let (group, b, node, s, mut receiver) =
+        setup_board(local_key_pair, actions.clone(), group_path, timeout).await?;
+    let b = b.start();
+    *sender.write().await = Some(s);
+
+    let actions1 = actions.clone();
+    task::spawn(async move {
+        let actions = actions1;
+        // Forward messages from the board to the network
+        while let Some((_peer, msg)) = receiver.next().await {
+            info!("sending message: {:?}", &msg);
+            actions
+                .send(NodeAction::SendDkg(DkgProtocolMessage::Message(msg)))
+                .await;
+        }
+    });
+
+    // Start DKG if is_leader
+    if is_leader {
+        *dkg_is_running.write().await = true;
+        task::spawn(async move {
+            let node = b.run_dkg(node).await;
+            dkg_done_sender.send((node, group)).await;
+        });
+
+        actions
+            .send(NodeAction::SendDkg(DkgProtocolMessage::Start))
+            .await;
+    } else {
+        *board.lock().await = Some((b, group, node));
+    }
+
+    // otherwise wait for dkg response
+    Ok(())
 }
 
 pub async fn stop(control_port: usize) -> Result<()> {

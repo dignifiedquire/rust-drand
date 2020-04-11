@@ -711,6 +711,7 @@ dependencies = [
  "log",
  "paired",
  "rand 0.7.3",
+ "rand_xorshift",
  "serde",
  "serde_cbor",
  "stop-token",
@@ -3068,7 +3069,7 @@ dependencies = [
 [[package]]
 name = "threshold"
 version = "0.1.0"
-source = "git+https://github.com/dignifiedquire/celo-threshold-bls-rs?branch=feat/serde#fa407cab83401f593040fa93c5ac3420bff84de2"
+source = "git+https://github.com/dignifiedquire/celo-threshold-bls-rs?branch=feat/serde#8cf0317bfdef980772ea58842e29fc3514a13e0d"
 dependencies = [
  "bitvec",
  "chacha20poly1305",

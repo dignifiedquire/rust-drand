@@ -6,6 +6,7 @@ use bls_signatures::Serialize as BlsSerialize;
 use serde::{Deserialize, Serialize};
 
 use super::{default_threshold, Identity};
+use crate::dkg::DistPublic;
 
 /// Holds all information about a group of drand nodes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14,15 +15,11 @@ pub struct Group {
     threshold: usize,
     /// Used for the beacon randomness generation.
     period: Option<Duration>,
-    /// List of ids forming this group.
-    nodes: Vec<Identity>,
     /// The distributed public key of this group. It is nil if the group has not ran a DKG protocol yet.
     public_key: Option<DistPublic>,
+    /// List of ids forming this group.
+    nodes: Vec<Identity>,
 }
-
-/// Placeholder for DKG.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DistPublic {}
 
 impl Group {
     /// Creates a minimal group.
@@ -36,6 +33,14 @@ impl Group {
             threshold,
             public_key: None,
         }
+    }
+
+    pub fn public_key(&self) -> Option<&DistPublic> {
+        self.public_key.as_ref()
+    }
+
+    pub fn set_public_key(&mut self, key: DistPublic) {
+        self.public_key = Some(key);
     }
 
     pub fn threshold(&self) -> usize {
@@ -136,9 +141,12 @@ mod tests {
     use super::super::Pair;
 
     use libp2p::multiaddr::multiaddr;
+    use rand::SeedableRng;
 
     #[test]
     fn group_save_load_test() {
+        let rng = &mut rand_xorshift::XorShiftRng::seed_from_u64(12);
+
         let n = 3;
 
         let key_pairs: Vec<_> = (0..n)
@@ -148,7 +156,10 @@ mod tests {
         let ids: Vec<_> = key_pairs.iter().map(|kp| kp.public().clone()).collect();
         let threshold = default_threshold(n as usize);
 
-        let group = Group::new(ids, threshold);
+        let mut group = Group::new(ids, threshold);
+        let dist_public: crate::dkg::DistPublic =
+            threshold::DistPublic::<crate::dkg::KeyCurve>::new_from(4, rng).into();
+        group.set_public_key(dist_public);
 
         let toml_str = toml::to_string(&group).unwrap();
         let group_ret = toml::from_str(&toml_str).unwrap();

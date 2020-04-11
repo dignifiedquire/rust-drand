@@ -190,13 +190,18 @@ impl Node<Done> {
         Ok(res)
     }
 
-    pub fn qual(&self) -> Result<&dkg::Group<KeyCurve>> {
+    pub fn share(&self) -> Result<&super::Share> {
+        let state = self.state.0.as_ref().map_err(|err| anyhow!("{}", err))?;
+        Ok(&state.share)
+    }
+
+    pub fn qual(&self) -> Result<&super::Group> {
         let state = self.state.0.as_ref().map_err(|err| anyhow!("{}", err))?;
         Ok(&state.qual)
     }
 
-    pub fn dist_public(&self) -> Result<&DistPublic<KeyCurve>> {
+    pub fn dist_public(&self) -> Result<super::DistPublic> {
         let state = self.state.0.as_ref().map_err(|err| anyhow!("{}", err))?;
-        Ok(&state.public)
+        Ok(state.public.clone().into())
     }
 }

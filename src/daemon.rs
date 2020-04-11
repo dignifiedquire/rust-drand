@@ -125,6 +125,7 @@ impl Daemon {
             let all_shares = board.get_shares().await;
             let node = node.dkg_phase2(&mut board, &all_shares).await?;
 
+            info!("Phase 3");
             let mut board = board.phase3().await?;
 
             // end of phase 2: read all responses and see if dkg can finish

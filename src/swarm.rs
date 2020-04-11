@@ -93,8 +93,8 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for NodeBehaviour {
     fn inject_event(&mut self, message: FloodsubEvent) {
         if let FloodsubEvent::Message(message) = message {
             info!(
-                "Received: '{:?}' from {:?} on {:?}",
-                String::from_utf8_lossy(&message.data),
+                "Received: {} bytes from {:?} on {:?}",
+                message.data.len(),
                 message.source,
                 message.topics,
             );

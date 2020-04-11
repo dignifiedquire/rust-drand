@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,11 +8,13 @@ use async_std::{
     sync::{channel, Receiver, Sender},
     task,
 };
+use futures::future::Either;
 use futures::StreamExt;
-use libp2p::Multiaddr;
-use log::{error, info};
+use libp2p::{Multiaddr, PeerId};
+use log::{error, info, warn};
 
 use crate::control;
+use crate::dkg;
 use crate::key::{self, Group, Pair, Store};
 use crate::swarm::{DkgProtocolMessage, Node, NodeAction, NodeEvent};
 
@@ -97,6 +100,7 @@ impl Daemon {
 
         // Initial connect to the known peers.
         for addr in &self.config.addrs {
+            info!("connecting to {:?}", addr);
             actions.send(NodeAction::Dial(addr.clone())).await;
         }
         enum E {
@@ -106,6 +110,51 @@ impl Daemon {
 
         let mut cr = control_receiver.map(E::Daemon);
         let mut ar = event_receiver.map(E::Swarm);
+
+        let mut board = None;
+        let mut sender = None;
+        let mut dkg_is_running = false;
+
+        let run_dkg = |board, node: dkg::Node<dkg::node::Start>| async move {
+            // TODO: deal with errors
+            info!("Phase 1");
+            let node = node.dkg_phase1(&board).await?;
+
+            info!("Phase 2");
+            let mut board = board.phase2().await?;
+            let all_shares = board.get_shares().await;
+            let node = node.dkg_phase2(&mut board, &all_shares).await?;
+
+            let mut board = board.phase3().await?;
+
+            // end of phase 2: read all responses and see if dkg can finish
+            // if there is need for justifications, nodes will publish
+            let all_responses = board.get_responses().await;
+            let node = node.dkg_endphase2(&mut board, &all_responses).await?;
+
+            let node = match node {
+                Either::Left(node) => {
+                    // needs phase3
+                    let all_justifs = board.get_justifications().await;
+                    info!(
+                        "- Number of dealers that are pushing justifications: {}",
+                        all_justifs.len()
+                    );
+                    node.dkg_phase3(&all_justifs)?
+                }
+                Either::Right(node) => node,
+            };
+            let _board = board.finish().await?;
+
+            let qual = node.qual()?;
+
+            info!("\t -> dealer has qualified set {:?}", qual);
+            let dist_public = node.dist_public()?;
+
+            info!("- Distributed public key: {:?}", dist_public.public_key());
+            info!("- DKG ended");
+            Ok::<(), anyhow::Error>(())
+        };
 
         while let Some(action) = cr.next().race(ar.next()).await {
             match action {
@@ -119,45 +168,87 @@ impl Daemon {
                     is_leader,
                     timeout,
                 }) => {
+                    info!("Init DKG (leader: {})", is_leader);
                     let res: Result<()> = {
+                        if board.is_some() {
+                            bail!("dkg already in progress");
+                        }
                         // Check if group already exists
                         // TODO
 
-                        // Read Group from source file
-                        let group: Group = key::load_from_file(&group_path)?;
-                        // TODO: ensure at least 5 members
-                        // TODO: ensure threshold < vss.MinimumT(group.len())
+                        let (b, node, s, mut receiver) =
+                            setup_board(&self.local_key_pair, actions.clone(), group_path, timeout)
+                                .await?;
+                        let b = b.start();
+                        sender = Some(s);
 
-                        // Extract Entropy
-
-                        let self_index = match group.index(self.local_key_pair.public()) {
-                            Some(i) => i,
-                            None => {
-                                bail!("self, not in group: abort");
+                        let actions1 = actions.clone();
+                        task::spawn(async move {
+                            let actions = actions1;
+                            // Forward messages from the board to the network
+                            while let Some((_peer, msg)) = receiver.next().await {
+                                info!("sending message: {:?}", &msg);
+                                actions
+                                    .send(NodeAction::SendDkg(DkgProtocolMessage::Message(msg)))
+                                    .await;
                             }
-                        };
+                        });
+
                         // Start DKG if is_leader
                         if is_leader {
+                            dkg_is_running = true;
+                            task::spawn(async move {
+                                if let Err(err) = run_dkg(b, node).await {
+                                    error!("dkg failed: {}", err);
+                                } else {
+                                    // TODO: signal done
+                                }
+                            });
+
                             actions
                                 .send(NodeAction::SendDkg(DkgProtocolMessage::Start))
                                 .await;
+                        } else {
+                            board = Some((b, node));
                         }
 
                         // otherwise wait for dkg response
                         Ok(())
                     };
+
                     if let Err(err) = res {
                         error!("init-dkg failed: {}", err);
                     }
                 }
-                E::Swarm(NodeEvent::ReceiveDkg(msg)) => {
+                E::Swarm(NodeEvent::ReceiveDkg(peer, msg)) => {
                     info!("got dkg message: {:?}", msg);
                     match msg {
                         DkgProtocolMessage::Start => {
                             // TODO: setup board and run dkg
+                            if dkg_is_running {
+                                error!("cannot start dkg, already running");
+                                continue;
+                            }
+
+                            if let Some((board, node)) = board.take() {
+                                dkg_is_running = true;
+                                task::spawn(async move {
+                                    if let Err(err) = run_dkg(board, node).await {
+                                        error!("dkg failed: {}", err);
+                                    } else {
+                                        // TODO: signal done
+                                    }
+                                });
+                            } else {
+                                error!("cannot start dkg, needs dkg-init");
+                            }
                         }
                         DkgProtocolMessage::Message(msg) => {
-                            // TODO: send message to the board
+                            if let Some(ref sender) = sender {
+                                sender.send((peer, msg)).await;
+                            } else {
+                                warn!("incoming dkg message, but no dkg setup: {:?}", msg);
+                            }
                         }
                     }
                 }
@@ -166,6 +257,58 @@ impl Daemon {
 
         Ok(())
     }
+}
+
+async fn setup_board(
+    local_key_pair: &Pair,
+    actions: Sender<NodeAction>,
+    group_path: PathBuf,
+    timeout: Duration,
+) -> Result<(
+    dkg::Board<dkg::board::Start>,
+    dkg::Node<dkg::node::Start>,
+    Sender<(PeerId, dkg::ProtocolMessage)>,
+    Receiver<(PeerId, dkg::ProtocolMessage)>,
+)> {
+    // Read Group from source file
+    let group: Group = key::load_from_file(&group_path)?;
+    // TODO: ensure at least 5 members
+    // TODO: ensure threshold < vss.MinimumT(group.len())
+
+    // Extract Entropy
+
+    let self_index = match group.index(local_key_pair.public()) {
+        Some(i) => i,
+        None => {
+            bail!("self, not in group: abort");
+        }
+    };
+
+    // Initial connect to the group peers.
+    for node in group.identities() {
+        info!("connecting to {:?}", node.address());
+        actions.send(NodeAction::Dial(node.address().clone())).await;
+    }
+
+    let (to_board_send, to_board_recv) = channel(3 * group.len());
+    let (from_board_send, from_board_recv) = channel(3 * group.len());
+    let dkg_group: dkg::Group = group.try_into()?;
+
+    let kp = local_key_pair;
+    let node = dkg::Node::new(
+        self_index,
+        kp.private().clone().into(),
+        kp.public().public_key().clone().into(),
+        kp.public().peer_id().clone(),
+        dkg_group.clone(),
+    )?;
+
+    Ok((
+        dkg::Board::init(dkg_group, from_board_send, to_board_recv, timeout),
+        node,
+        to_board_send,
+        from_board_recv,
+    ))
 }
 
 pub async fn stop(control_port: usize) -> Result<()> {

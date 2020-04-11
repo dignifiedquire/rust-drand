@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use anyhow::Result;
     use async_std::sync::channel;
     use async_std::{sync::Arc, task};
@@ -72,13 +74,18 @@ mod tests {
 
         // setup channels
         let mut channels = Vec::new();
-        for kp in &keypairs {
+        for _kp in &keypairs {
             channels.push(channel(100));
         }
         let channels = Arc::new(channels);
         for (i, kp) in keypairs.iter().enumerate() {
             let (sender, receiver) = channel(50);
-            let board = Board::init(group.clone(), sender, channels[i].1.clone());
+            let board = Board::init(
+                group.clone(),
+                sender,
+                channels[i].1.clone(),
+                Duration::from_secs(5),
+            );
 
             let channels = channels.clone();
 

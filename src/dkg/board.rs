@@ -5,6 +5,7 @@ use anyhow::{bail, ensure, Result};
 use async_std::prelude::*;
 use async_std::sync::{channel, Arc, Receiver, RwLock, Sender};
 use libp2p::PeerId;
+use log::info;
 use serde::{Deserialize, Serialize};
 use stop_token::StopSource;
 use threshold::dkg;
@@ -60,13 +61,14 @@ impl Board<Start> {
         group: dkg::Group<KeyCurve>,
         sender: Sender<(PeerId, ProtocolMessage)>,
         receiver: Receiver<(PeerId, ProtocolMessage)>,
+        timeout: Duration,
     ) -> Self {
         Self {
             group,
             state: Start,
             sender,
             receiver,
-            timeout: Duration::from_secs(5),
+            timeout,
             stop_source: None,
             deals: Default::default(),
             deals_done: None,
@@ -99,8 +101,6 @@ impl Board<Start> {
 
         async_std::task::spawn(async move {
             while let Some((peer, msg)) = receiver.next().await {
-                // println!("<< {}: {:?}", peer, msg);
-
                 match msg {
                     ProtocolMessage::Deal(deal) => {
                         {
@@ -146,13 +146,13 @@ impl Board<One> {
             .await
         {
             Ok(Some(())) => {
-                println!("received all deals");
+                info!("received all deals");
             }
             Ok(None) => {
-                println!("phase1 aborted due to interrupt");
+                info!("phase1 aborted due to interrupt");
             }
             Err(_) => {
-                println!("stopped phase1 due to timeout");
+                info!("stopped phase1 due to timeout");
             }
         }
 
@@ -171,7 +171,6 @@ impl Board<One> {
         bundle: dkg::BundledShares<KeyCurve>,
     ) -> Result<()> {
         self.check_authenticity(sender_pk, bundle.dealer_idx)?;
-        println!(">> {}: deal", peer_id);
         self.sender
             .send((peer_id, ProtocolMessage::Deal(bundle)))
             .await;
@@ -190,13 +189,13 @@ impl Board<Two> {
             .await
         {
             Ok(Some(())) => {
-                println!("received all responses");
+                info!("received all responses");
             }
             Ok(None) => {
-                println!("phase2 aborted due to interrupt");
+                info!("phase2 aborted due to interrupt");
             }
             Err(_) => {
-                println!("stopped phase2 due to timeout");
+                info!("stopped phase2 due to timeout");
             }
         }
 
@@ -215,7 +214,6 @@ impl Board<Two> {
         bundle: dkg::BundledResponses,
     ) -> Result<()> {
         self.check_authenticity(sender_pk, bundle.share_idx)?;
-        // println!(">> {}: response", peer_id);
         self.sender
             .send((peer_id, ProtocolMessage::Response(bundle)))
             .await;
@@ -235,13 +233,13 @@ impl Board<Three> {
                 .await
             {
                 Ok(Some(())) => {
-                    println!("received all justifications");
+                    info!("received all justifications");
                 }
                 Ok(None) => {
-                    println!("phase3 aborted due to interrupt");
+                    info!("phase3 aborted due to interrupt");
                 }
                 Err(_) => {
-                    println!("stopped phase3 due to timeout");
+                    info!("stopped phase3 due to timeout");
                 }
             }
         }
@@ -257,7 +255,6 @@ impl Board<Three> {
         bundle: dkg::BundledJustification<KeyCurve>,
     ) -> Result<()> {
         self.check_authenticity(sender_pk, bundle.dealer_idx)?;
-        // println!(">> {}: justification", peer_id);
         self.sender
             .send((peer_id, ProtocolMessage::Justification(bundle)))
             .await;

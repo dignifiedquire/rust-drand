@@ -1,3 +1,4 @@
+use std::convert::TryInto;
 use std::time::Duration;
 
 use blake2b_simd::Params;
@@ -98,6 +99,33 @@ impl Group {
     /// Find the index of the given identity.
     pub fn index(&self, other: &Identity) -> Option<usize> {
         self.nodes.iter().position(|n| n == other)
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+}
+
+impl TryInto<crate::dkg::Group> for Group {
+    type Error = threshold::dkg::DKGError;
+
+    fn try_into(self) -> Result<crate::dkg::Group, Self::Error> {
+        let nodes = self
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let pk: bls_signatures::PublicKey = node.public_key().clone();
+                let g1: paired::bls12_381::G1 = pk.into();
+                crate::dkg::DkgNode::new(i as crate::dkg::Index, g1)
+            })
+            .collect();
+
+        crate::dkg::Group::new(nodes, self.threshold())
     }
 }
 

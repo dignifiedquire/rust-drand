@@ -45,7 +45,7 @@ pub enum NodeAction {
 /// Events that the node emits and are handled by the daemon.
 #[derive(Debug, Clone)]
 pub enum NodeEvent {
-    ReceiveDkg(DkgProtocolMessage),
+    ReceiveDkg(PeerId, DkgProtocolMessage),
 }
 
 /// Protocol Messages for the DKG flow. Transmitted via floodsub.
@@ -67,7 +67,10 @@ struct NodeBehaviour {
 
 #[derive(Debug)]
 enum NetworkEvent {
-    Dkg(std::result::Result<DkgProtocolMessage, serde_cbor::Error>),
+    Dkg(
+        PeerId,
+        std::result::Result<DkgProtocolMessage, serde_cbor::Error>,
+    ),
 }
 
 impl NodeBehaviour {
@@ -90,15 +93,16 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for NodeBehaviour {
     fn inject_event(&mut self, message: FloodsubEvent) {
         if let FloodsubEvent::Message(message) = message {
             info!(
-                "Received: '{:?}' from {:?}",
+                "Received: '{:?}' from {:?} on {:?}",
                 String::from_utf8_lossy(&message.data),
-                message.source
+                message.source,
+                message.topics,
             );
 
             if message.topics.contains(&self.dkg_topic) {
                 // DKG message
                 let parsed = serde_cbor::from_slice(&message.data);
-                if let Err(err) = self.events.push(NetworkEvent::Dkg(parsed)) {
+                if let Err(err) = self.events.push(NetworkEvent::Dkg(message.source, parsed)) {
                     // TODO: handle full queue
                     warn!("failed to push network event, queue full: {:?}", err);
                 }
@@ -183,11 +187,13 @@ impl Node {
                             self.swarm.floodsub.add_node_to_partial_view(peer_id);
                         }
                         swarm::SwarmEvent::Behaviour(ev) => match ev {
-                            NetworkEvent::Dkg(msg) => {
+                            NetworkEvent::Dkg(peer, msg) => {
                                 match msg {
                                     Ok(msg) => {
                                         // TODO: send on the right channel
-                                        self.event_sender.send(NodeEvent::ReceiveDkg(msg)).await;
+                                        self.event_sender
+                                            .send(NodeEvent::ReceiveDkg(peer, msg))
+                                            .await;
                                     }
                                     Err(err) => {
                                         warn!("invalid dkg event: {}", err);
@@ -225,6 +231,8 @@ impl Node {
                         break;
                     }
                     Some(NodeAction::SendDkg(ref msg)) => {
+                        info!("sending dkg message: {:?}", msg);
+
                         let bytes =
                             serde_cbor::to_vec(msg).expect("invalid message formats defined");
                         self.swarm.floodsub.publish(self.dkg_topic.clone(), bytes)

@@ -73,9 +73,6 @@ enum DrandCommand {
     /// the new group as argument. Specify the --leader flag to make
     /// this daemon start the protocol.
     Share {
-        /// Disable TLS for all communications (not recommended).
-        #[structopt(long, short = "d")]
-        tls_disable: bool,
         /// Set the port you want to listen to for control port commands.
         #[structopt(long, default_value = "8888")]
         control: usize,
@@ -132,14 +129,6 @@ enum DrandCommand {
     },
     /// Get allows for public information retrieval from a remote drand node.
     Get {
-        /// Disable TLS for all communications (not recommended).
-        #[structopt(long, short = "d")]
-        tls_disable: bool,
-        /// Set the TLS certificate chain (in PEM format) for this drand node.
-        /// The certificates have to be specified as a list of whitespace-separated file paths.
-        /// This parameter is required by default and can only be omitted if the --tls-disable flag is used.
-        #[structopt(long, short = "c", parse(from_os_str))]
-        tls_cert: PathBuf,
         /// Contact the nodes at the given list of whitespace-separated addresses which have to be present in group.toml.
         #[structopt(long, short = "n")]
         nodes: Vec<String>,

@@ -282,6 +282,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "blind-threshold-bls"
+version = "0.1.0"
+source = "git+https://github.com/celo-org/celo-threshold-bls-rs#078f1f4e6d57778724716dc40568c541f71554bd"
+dependencies = [
+ "bitvec",
+ "chacha20poly1305",
+ "fff",
+ "groupy",
+ "hkdf",
+ "paired",
+ "rand 0.7.3",
+ "rand_core 0.5.1",
+ "serde",
+ "serde_bytes",
+ "sha2",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -699,6 +717,7 @@ dependencies = [
  "async-std",
  "atty",
  "blake2b_simd",
+ "blind-threshold-bls",
  "bls-signatures",
  "crossbeam",
  "futures 0.3.4",
@@ -717,7 +736,6 @@ dependencies = [
  "stop-token",
  "structopt",
  "surf",
- "threshold",
  "tide",
  "toml",
  "unicode-segmentation",
@@ -3064,24 +3082,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "threshold"
-version = "0.1.0"
-source = "git+https://github.com/dignifiedquire/celo-threshold-bls-rs?branch=feat/serde#8cf0317bfdef980772ea58842e29fc3514a13e0d"
-dependencies = [
- "bitvec",
- "chacha20poly1305",
- "fff",
- "groupy",
- "hkdf",
- "paired",
- "rand 0.7.3",
- "rand_core 0.5.1",
- "serde",
- "serde_bytes",
- "sha2",
 ]
 
 [[package]]

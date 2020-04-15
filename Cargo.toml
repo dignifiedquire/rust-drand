@@ -40,12 +40,11 @@ git = "https://github.com/filecoin-project/bls-signatures"
 branch = "master"
 
 [dependencies.threshold]
-# git = "https://github.com/celo-org/celo-threshold-bls-rs"
-git = "https://github.com/dignifiedquire/celo-threshold-bls-rs"
-# branch = "master"
-branch = "feat/serde"
+git = "https://github.com/celo-org/celo-threshold-bls-rs"
+branch = "master"
 default-features = false
 features = ["bls12_381"]
+package = "blind-threshold-bls"
 
 [dependencies.libp2p]
 version = "0.18"

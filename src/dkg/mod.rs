@@ -9,8 +9,8 @@ pub type DkgNode = threshold::dkg::Node<self::curve::KeyCurve>;
 pub type Share = threshold::Share<self::curve::PrivateKey>;
 
 pub use self::board::{Board, ProtocolMessage};
+pub use self::curve::*;
 pub use self::node::Node;
-pub use curve::KeyCurve;
 pub use threshold::Index;
 
 use serde::de::Deserializer;

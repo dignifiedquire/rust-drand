@@ -8,4 +8,5 @@ use threshold::sig::tblind::G1Scheme;
 pub type KeyCurve = G1Curve;
 pub type PrivateKey = <KeyCurve as Curve>::Scalar;
 pub type PublicKey = <KeyCurve as Curve>::Point;
+/// The signature scheme used for signing and verifying the randomness.
 pub type Scheme = G1Scheme<Pairing>;

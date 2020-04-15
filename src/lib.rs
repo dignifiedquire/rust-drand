@@ -4,5 +4,6 @@ pub mod daemon;
 pub mod key;
 pub mod logger;
 
+mod beacon;
 mod dkg;
 mod swarm;

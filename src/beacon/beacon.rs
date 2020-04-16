@@ -1,13 +1,17 @@
 use time::{Duration, OffsetDateTime};
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use threshold::sig::{Scheme, ThresholdScheme};
+use threshold::{
+    sig::{tbls::Serializer, Scheme, ThresholdScheme},
+    Index,
+};
 
 use crate::dkg;
 
 /// The randomness and the info to verify it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Beacon {
     /// The previous round this beacon points to.
     ///
@@ -23,6 +27,29 @@ pub struct Beacon {
 }
 
 impl Beacon {
+    pub fn aggregate(
+        public_key: &<dkg::Scheme as Scheme>::Public,
+        threshold: usize,
+        partials: &[Vec<u8>],
+        previous_round: Round,
+        previous_signature: Vec<u8>,
+        round: Round,
+    ) -> Result<Self> {
+        let signature = dkg::Scheme::aggregate(threshold, partials)
+            .map_err(|err| anyhow!("failed to aggregate: {}", err))?;
+
+        let beacon = Beacon {
+            previous_round,
+            previous_signature,
+            round,
+            signature,
+        };
+
+        beacon.verify(public_key)?;
+
+        Ok(beacon)
+    }
+
     /// Returns the hashed signature.
     pub fn randomness(&self) -> Vec<u8> {
         Sha256::digest(&self.signature).as_ref().to_vec()
@@ -62,7 +89,13 @@ impl Beacon {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl From<&Beacon> for sled::IVec {
+    fn from(beacon: &Beacon) -> Self {
+        serde_cbor::to_vec(beacon).expect("invalid beacon").into()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialBeacon {
     /// The previous round this beacon points to.
     previous_round: Round,
@@ -72,6 +105,14 @@ pub struct PartialBeacon {
     round: Round,
     /// The partial signature, being built during the current round.
     partial_signature: Vec<u8>,
+}
+
+impl From<&PartialBeacon> for sled::IVec {
+    fn from(beacon: &PartialBeacon) -> Self {
+        serde_cbor::to_vec(beacon)
+            .expect("invalid partial beacon")
+            .into()
+    }
 }
 
 impl PartialBeacon {
@@ -88,10 +129,25 @@ impl PartialBeacon {
             partial_signature,
         }
     }
+
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
+    pub fn partial_signature(&self) -> &[u8] {
+        &self.partial_signature
+    }
+
+    /// Returns the index in the group of the partial signature.
+    pub fn index(&self) -> Result<Index> {
+        let (index, _) = dkg::Scheme::extract(&self.partial_signature)?;
+
+        Ok(index)
+    }
 }
 
 /// A specific round in the protocol.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Round(u64);
 
 impl Round {

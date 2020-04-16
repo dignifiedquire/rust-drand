@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_std::prelude::*;
-use async_std::sync::{channel, Receiver, Sender};
+use async_std::sync::{channel, Arc, Receiver, Sender};
+use log::error;
 use time::{Duration, OffsetDateTime};
 
 use crate::dkg;
@@ -8,12 +9,16 @@ use crate::key;
 
 use super::beacon::{self, Beacon, PartialBeacon, Round};
 
+const DB_BEACON_STORE: &[u8] = b"beacon";
+const DB_PARTIAL_BEACON_STORE: &[u8] = b"partial-beacon";
+
 /// Manages beacon generation and responding to network requests.
 #[derive(Debug)]
 pub struct Handler {
     /// Stores the historic data of the beacons.
-    store: sled::Db,
-    config: HandlerConfig,
+    beacon_store: sled::Tree,
+    partial_beacon_store: sled::Tree,
+    config: Arc<HandlerConfig>,
     /// Index in the group of the node running this beacon.
     index: usize,
 }
@@ -43,9 +48,13 @@ impl Handler {
             .index(config.private_key.public())
             .ok_or_else(|| anyhow!("keypair not included in teh given group"))?;
 
+        let beacon_store = store.open_tree(DB_BEACON_STORE)?;
+        let partial_beacon_store = store.open_tree(DB_PARTIAL_BEACON_STORE)?;
+
         Ok(Self {
-            store,
-            config,
+            beacon_store,
+            partial_beacon_store,
+            config: Arc::new(config),
             index,
         })
     }
@@ -56,10 +65,32 @@ impl Handler {
         last_beacon: &Beacon,
         next_round: Round,
         start_time: OffsetDateTime,
-        sender: Sender<BeaconRequest>,
+        outgoing_requests: Sender<BeaconRequest>,
         incoming_requests: Receiver<BeaconRequest>,
     ) {
         // TODO: handle sleep time before genesis
+
+        let store = self.partial_beacon_store.clone();
+        async_std::task::spawn(async move {
+            while let Some(req) = incoming_requests.recv().await {
+                // process incoming requests
+                match req {
+                    BeaconRequest::PartialBeacon(partial_beacon) => {
+                        let res = || -> Result<()> {
+                            let mut key = partial_beacon.round().to_bytes().to_vec();
+                            key.extend_from_slice(b"-");
+                            key.extend_from_slice(&partial_beacon.index()?.to_be_bytes());
+                            store.insert(key, &partial_beacon)?;
+                            Ok(())
+                        };
+
+                        if let Err(err) = res() {
+                            error!("failed to process incoming partial beacon: {}", err);
+                        }
+                    }
+                }
+            }
+        });
 
         enum Event {
             Tick,
@@ -89,9 +120,10 @@ impl Handler {
                     current_round,
                     previous_round,
                     previous_signature.clone(),
-                    incoming_requests.clone(),
+                    outgoing_requests.clone(),
                     beacon_sender.clone(),
-                );
+                )
+                .await;
 
                 go_to_next_round = false;
                 current_round_finished = false;
@@ -126,12 +158,12 @@ impl Handler {
         }
     }
 
-    fn run_round(
+    async fn run_round(
         &self,
         current_round: Round,
         previous_round: Round,
         previous_signature: Vec<u8>,
-        incoming: Receiver<BeaconRequest>,
+        outgoing: Sender<BeaconRequest>,
         winner: Sender<Beacon>,
     ) {
         let share = &self.config.share;
@@ -151,13 +183,7 @@ impl Handler {
             partial_signature,
         ));
 
-        async_std::task::spawn(async move {
-            while let Some(req) = incoming.recv().await {
-                // TODO: process incoming requests and send the resulting finished beacon to winner
-                // send results to partials_sender
-            }
-        });
-
-        // send out partial beacons of
+        // send out partial beacon
+        outgoing.send(request.clone()).await;
     }
 }

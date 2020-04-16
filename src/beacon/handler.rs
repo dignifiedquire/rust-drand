@@ -185,5 +185,56 @@ impl Handler {
 
         // send out partial beacon
         outgoing.send(request.clone()).await;
+
+        let store = self.partial_beacon_store.clone();
+        async_std::task::spawn(async move {
+            // process incoming partial beacons
+            let mut prefix = current_round.to_bytes().to_vec();
+            prefix.extend(b"-");
+
+            let mut partials = Vec::with_capacity(threshold);
+            let events = store.watch_prefix(&prefix);
+
+            macro_rules! log_err {
+                ($res:expr) => {
+                    match $res {
+                        Ok(res) => res,
+                        Err(err) => {
+                            error!("{}", err);
+                            continue;
+                        }
+                    }
+                };
+            }
+
+            // process exsting once
+            for value in store.scan_prefix(&prefix).values() {
+                let value = log_err!(value);
+                let partial_beacon: PartialBeacon = log_err!(serde_cbor::from_slice(&value));
+                partials.push(partial_beacon.partial_signature().to_vec());
+                if partials.len() >= threshold {
+                    break;
+                }
+            }
+
+            if partials.len() < threshold {
+                // process ongoing
+                for el in events {
+                    match el {
+                        sled::Event::Insert(_, value) => {
+                            let partial_beacon: PartialBeacon =
+                                log_err!(serde_cbor::from_slice(&value));
+                            partials.push(partial_beacon.partial_signature().to_vec());
+                            if partials.len() >= threshold {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                drop(events);
+            }
+        });
     }
 }

@@ -42,11 +42,7 @@ impl Beacon {
     ///
     /// Currently: `Sha256(previous_round || previous_signature || round)`.
     pub fn message(&self) -> Vec<u8> {
-        let mut hasher = Sha256::new();
-        hasher.input(&self.previous_round.to_bytes());
-        hasher.input(&self.previous_signature);
-        hasher.input(&self.round.to_bytes());
-        hasher.result().as_ref().to_vec()
+        hash(&self.previous_signature, self.previous_round, self.round)
     }
 
     pub fn round(&self) -> Round {
@@ -76,6 +72,22 @@ pub struct PartialBeacon {
     round: Round,
     /// The partial signature, being built during the current round.
     partial_signature: Vec<u8>,
+}
+
+impl PartialBeacon {
+    pub fn new(
+        previous_round: Round,
+        previous_signature: Vec<u8>,
+        round: Round,
+        partial_signature: Vec<u8>,
+    ) -> Self {
+        Self {
+            previous_round,
+            previous_signature,
+            round,
+            partial_signature,
+        }
+    }
 }
 
 /// A specific round in the protocol.
@@ -153,6 +165,25 @@ impl From<Round> for u64 {
     fn from(val: Round) -> Self {
         val.0
     }
+}
+
+pub fn sign(
+    private_key: &dkg::Share,
+    previous_signature: &[u8],
+    previous_round: Round,
+    round: Round,
+) -> Result<Vec<u8>> {
+    let msg = hash(previous_signature, previous_round, round);
+    <dkg::Scheme as ThresholdScheme>::partial_sign(private_key, &msg)
+        .map_err(|err| anyhow!("failed to sign: {}", err))
+}
+
+fn hash(previous_signature: &[u8], previous_round: Round, round: Round) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.input(&previous_round.to_bytes());
+    hasher.input(previous_signature);
+    hasher.input(&round.to_bytes());
+    hasher.result().as_ref().to_vec()
 }
 
 #[cfg(test)]

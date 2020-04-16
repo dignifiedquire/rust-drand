@@ -6,7 +6,7 @@ use time::{Duration, OffsetDateTime};
 use crate::dkg;
 use crate::key;
 
-use super::beacon::{Beacon, PartialBeacon, Round};
+use super::beacon::{self, Beacon, PartialBeacon, Round};
 
 /// Manages beacon generation and responding to network requests.
 #[derive(Debug)]
@@ -139,10 +139,25 @@ impl Handler {
         let threshold = self.config.group.threshold();
         let dist_public = &self.config.dist_public;
 
+        // let (partials_sender, partials_receiver) = channel(10);
+
+        let partial_signature =
+            beacon::sign(share, &previous_signature, previous_round, current_round).unwrap(); // TODO: handle error
+
+        let request = BeaconRequest::PartialBeacon(PartialBeacon::new(
+            previous_round,
+            previous_signature,
+            current_round,
+            partial_signature,
+        ));
+
         async_std::task::spawn(async move {
             while let Some(req) = incoming.recv().await {
                 // TODO: process incoming requests and send the resulting finished beacon to winner
+                // send results to partials_sender
             }
         });
+
+        // send out partial beacons of
     }
 }

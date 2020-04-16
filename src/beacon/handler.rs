@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use async_std::prelude::*;
 use async_std::sync::{channel, Arc, Receiver, Sender};
 use log::error;
+use threshold::sig::Scheme;
 use time::{Duration, OffsetDateTime};
 
 use crate::dkg;
@@ -27,7 +28,7 @@ pub struct Handler {
 #[derive(Debug)]
 pub struct HandlerConfig {
     pub share: dkg::Share,
-    pub dist_public: dkg::DistPublic,
+    pub public_key: <dkg::Scheme as Scheme>::Public,
     pub private_key: key::Pair,
     pub group: key::Group,
     pub wait_time: Duration,
@@ -166,19 +167,21 @@ impl Handler {
         outgoing: Sender<BeaconRequest>,
         winner: Sender<Beacon>,
     ) {
-        let share = &self.config.share;
-        let nodes = self.config.group.identities();
         let threshold = self.config.group.threshold();
-        let dist_public = &self.config.dist_public;
 
-        // let (partials_sender, partials_receiver) = channel(10);
+        let (partials_sender, partials_receiver) = channel(1);
 
-        let partial_signature =
-            beacon::sign(share, &previous_signature, previous_round, current_round).unwrap(); // TODO: handle error
+        let partial_signature = beacon::sign(
+            &self.config.share,
+            &previous_signature,
+            previous_round,
+            current_round,
+        )
+        .unwrap(); // TODO: handle error
 
         let request = BeaconRequest::PartialBeacon(PartialBeacon::new(
             previous_round,
-            previous_signature,
+            previous_signature.clone(),
             current_round,
             partial_signature,
         ));
@@ -234,6 +237,37 @@ impl Handler {
                 }
             } else {
                 drop(events);
+            }
+
+            partials_sender.send(partials).await;
+            drop(partials_sender); // close the channel
+        });
+
+        let config = self.config.clone();
+        let store = self.beacon_store.clone();
+        async_std::task::spawn(async move {
+            while let Some(partial_signatures) = partials_receiver.recv().await {
+                let beacon = Beacon::aggregate(
+                    &config.public_key,
+                    config.group.threshold(),
+                    &partial_signatures,
+                    previous_round,
+                    previous_signature.clone(),
+                    current_round,
+                );
+
+                match beacon {
+                    Ok(beacon) => {
+                        // store beacon
+                        if let Err(err) = store.insert(beacon.round().to_bytes(), &beacon) {
+                            error!("failed to store beacon: {}", err);
+                        }
+                        winner.send(beacon).await;
+                    }
+                    Err(err) => {
+                        error!("failed to aggregate beacon: {}", err);
+                    }
+                }
             }
         });
     }

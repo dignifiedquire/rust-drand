@@ -5,41 +5,6 @@ use sha2::{Digest, Sha256};
 use threshold::sig::{Scheme, ThresholdScheme};
 
 use crate::dkg;
-use crate::key;
-
-/// Manages beacon generation and responding to network requests.
-#[derive(Debug)]
-pub struct Handler {
-    /// Stores the historic data of the beacons.
-    store: sled::Db,
-    config: HandlerConfig,
-    /// Index in the group of the node running this beacon.
-    index: usize,
-}
-
-/// Configuration for the [Handler].
-#[derive(Debug)]
-pub struct HandlerConfig {
-    pub share: dkg::Share,
-    pub private_key: key::Pair,
-    pub group: key::Group,
-    pub wait_time: Duration,
-}
-
-impl Handler {
-    pub fn new(store: sled::Db, config: HandlerConfig) -> Result<Self> {
-        let index = config
-            .group
-            .index(config.private_key.public())
-            .ok_or_else(|| anyhow!("keypair not included in teh given group"))?;
-
-        Ok(Self {
-            store,
-            config,
-            index,
-        })
-    }
-}
 
 /// The randomness and the info to verify it.
 #[derive(Debug, PartialEq, Eq)]
@@ -83,16 +48,54 @@ impl Beacon {
         hasher.input(&self.round.to_bytes());
         hasher.result().as_ref().to_vec()
     }
+
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+
+    pub fn previous_round(&self) -> Round {
+        self.previous_round
+    }
+
+    pub fn previous_signature(&self) -> &[u8] {
+        &self.previous_signature
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialBeacon {
+    /// The previous round this beacon points to.
+    previous_round: Round,
+    /// The signature from the previous round.
+    previous_signature: Vec<u8>,
+    /// The current round number of this beacon.
+    round: Round,
+    /// The partial signature, being built during the current round.
+    partial_signature: Vec<u8>,
 }
 
 /// A specific round in the protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Round(u64);
 
 impl Round {
+    /// The zero round.
+    pub fn zero() -> Self {
+        Round(0)
+    }
+
     /// Returns the round as its byte representation.
     pub fn to_bytes(self) -> [u8; 8] {
         self.0.to_be_bytes()
+    }
+
+    /// Increment the round by one.
+    pub fn inc(&mut self) {
+        self.0 += 1;
     }
 
     /// Returns the the time this round should happen.

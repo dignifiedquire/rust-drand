@@ -2,6 +2,7 @@
 
 > Implementation of [drand](https://github.com/drand/drand) in Rust.
 
+⚠️ Not secure, not audited, and not complete. Please use carefully!
 
 ## Installation
 
